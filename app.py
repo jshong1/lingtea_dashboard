@@ -32,31 +32,7 @@ ALLOWED_USERS = [
 # -----------------------------------
 # 🔐 로그인 처리 (로컬 + 클라우드 호환)
 # -----------------------------------
-
-is_cloud = hasattr(st, "user") and hasattr(st.user, "email")
-
-if is_cloud:
-    # Streamlit Cloud 환경
-    try:
-        if not st.user.email:
-            st.login()
-
-        user_email = st.user.email
-
-        if user_email not in ALLOWED_USERS:
-            st.error("접근 권한이 없습니다.")
-            st.stop()
-
-        st.success(f"로그인 사용자: {user_email}")
-
-    except:
-        st.error("로그인이 필요합니다.")
-        st.stop()
-
-else:
-    # 로컬 실행 환경
-    st.warning("로컬 실행 모드 (로그인 비활성화)")
-    user_email = "local_test_user"
+user_email = "public_user"
 
 # -----------------------------------
 # 📥 Google Sheets 로드 (Cloud + 로컬 겸용)
@@ -399,3 +375,4 @@ st.download_button(
 
 
 st.success("🚀 Lingtea Dashboard Ready")
+
