@@ -59,7 +59,7 @@ else:
     user_email = "local_test_user"
 
 # -----------------------------------
-# 📥 Google Sheets 로드 (최근 12개월 컷)
+# 📥 Google Sheets 로드 (Cloud + 로컬 겸용)
 # -----------------------------------
 
 @st.cache_data(ttl=600)
@@ -69,14 +69,27 @@ def load_data():
         "https://www.googleapis.com/auth/spreadsheets.readonly"
     ]
 
-    creds = Credentials.from_service_account_file(
-    "service_account.json",
-    scopes=scope
-    )
+    import os
+
+    # 🔥 로컬 실행이면 JSON 파일 사용
+    if os.path.exists("service_account.json"):
+        creds = Credentials.from_service_account_file(
+            "service_account.json",
+            scopes=scope
+        )
+
+    # 🔥 Streamlit Cloud 실행이면 Secrets 사용
+    else:
+        creds = Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"],
+            scopes=scope
+        )
 
     client = gspread.authorize(creds)
 
-    sheet = client.open_by_key("1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk").worksheet("VIEW_TABLE")
+    sheet = client.open_by_key(
+        "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
+    ).worksheet("VIEW_TABLE")
 
     data = sheet.get_all_values()
 
@@ -92,13 +105,22 @@ def load_data():
     ]]
 
     df["출고일자"] = pd.to_datetime(df["출고일자"], errors="coerce")
-    df["총내품출고수량"] = pd.to_numeric(df["총내품출고수량"], errors="coerce")
-    df["품목별매출(VAT제외)"] = (
-    df["품목별매출(VAT제외)"]
+
+    df["총내품출고수량"] = (
+        df["총내품출고수량"]
         .astype(str)
         .str.replace(",", "", regex=False)
     )
+    df["총내품출고수량"] = pd.to_numeric(
+        df["총내품출고수량"],
+        errors="coerce"
+    )
 
+    df["품목별매출(VAT제외)"] = (
+        df["품목별매출(VAT제외)"]
+        .astype(str)
+        .str.replace(",", "", regex=False)
+    )
     df["품목별매출(VAT제외)"] = pd.to_numeric(
         df["품목별매출(VAT제외)"],
         errors="coerce"
@@ -112,6 +134,7 @@ def load_data():
     df["출고년월"] = df["출고년월"].astype(str)
 
     return df
+
 
 df = load_data()
 
@@ -373,5 +396,6 @@ st.download_button(
     file_name="거래처_월_피벗.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 )
+
 
 st.success("🚀 Lingtea Dashboard Ready")
