@@ -115,6 +115,63 @@ def load_data():
 df = load_data()
 
 # -----------------------------------
+# 📦 MASTER DATA 로드
+# -----------------------------------
+
+@st.cache_data(ttl=600)
+def load_master():
+
+    scope = [
+        "https://www.googleapis.com/auth/spreadsheets.readonly"
+    ]
+
+    import os
+
+    if os.path.exists("service_account.json"):
+        creds = Credentials.from_service_account_file(
+            "service_account.json",
+            scopes=scope
+        )
+    else:
+        creds = Credentials.from_service_account_info(
+            st.secrets["gcp_service_account"],
+            scopes=scope
+        )
+
+    client = gspread.authorize(creds)
+
+    # ITEM MASTER
+    item_ws = client.open_by_key(
+        "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
+    ).worksheet("ITEM_MASTER")
+
+    item_data = item_ws.get_all_values()
+    item_df = pd.DataFrame(item_data[1:], columns=item_data[0])
+
+    item_df["제품원가"] = pd.to_numeric(
+        item_df["제품원가"],
+        errors="coerce"
+    )
+
+    # CUSTOMER MASTER
+    cust_ws = client.open_by_key(
+        "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
+    ).worksheet("CUSTOMER_MASTER")
+
+    cust_data = cust_ws.get_all_values()
+    cust_df = pd.DataFrame(cust_data[1:], columns=cust_data[0])
+
+    cust_df["수수료율"] = pd.to_numeric(
+        cust_df["수수료율"],
+        errors="coerce"
+    )
+
+    return item_df, cust_df
+
+
+item_df, cust_df = load_master()
+
+# -----------------------------------
 # 🎛 필터 영역
 # -----------------------------------
 
@@ -173,6 +230,49 @@ filtered_df = df[
     (df["거래처코드"].isin(selected_channels)) &
     (df["내품상품명"].isin(selected_items))
 ]
+
+# -----------------------------------
+# 💰 MASTER MERGE
+# -----------------------------------
+
+filtered_df = filtered_df.merge(
+    item_df[["상품명", "제품원가"]],
+    left_on="내품상품명",
+    right_on="상품명",
+    how="left"
+)
+
+filtered_df = filtered_df.merge(
+    cust_df[["거래처명", "거래처분류", "수수료율"]],
+    left_on="거래처코드",
+    right_on="거래처명",
+    how="left"
+)
+
+# -----------------------------------
+# 💰 마진 계산
+# -----------------------------------
+
+filtered_df["원가총액"] = (
+    filtered_df["총내품출고수량"] *
+    filtered_df["제품원가"]
+)
+
+filtered_df["채널수수료"] = (
+    filtered_df["품목별매출(VAT제외)"] *
+    filtered_df["수수료율"]
+)
+
+filtered_df["마진"] = (
+    filtered_df["품목별매출(VAT제외)"]
+    - filtered_df["원가총액"]
+    - filtered_df["채널수수료"]
+)
+
+filtered_df["마진율"] = (
+    filtered_df["마진"] /
+    filtered_df["품목별매출(VAT제외)"]
+)
 
 # -----------------------------------
 # 💎 KPI 계산 (최근 선택 월 기준 전월 대비)
@@ -255,6 +355,77 @@ fig_trend.update_layout(
 fig_trend.update_xaxes(tickformat="%Y-%m")
 
 st.plotly_chart(fig_trend, use_container_width=True)
+
+# -----------------------------------
+# 🔥 제품 × 월 히트맵
+# -----------------------------------
+
+st.subheader("🔥 제품 × 월 매출 히트맵")
+
+heatmap_df = pd.pivot_table(
+    filtered_df,
+    values="품목별매출(VAT제외)",
+    index="내품상품명",
+    columns="출고년월",
+    aggfunc="sum",
+    fill_value=0
+)
+
+fig_heatmap = px.imshow(
+    heatmap_df,
+    text_auto=True,
+    aspect="auto"
+)
+
+st.plotly_chart(fig_heatmap, use_container_width=True)
+
+# -----------------------------------
+# 📦 월별 출고량
+# -----------------------------------
+
+st.subheader("📦 월별 출고량")
+
+monthly_qty = (
+    filtered_df
+    .groupby("출고년월")["총내품출고수량"]
+    .sum()
+    .reset_index()
+)
+
+monthly_qty["출고년월_dt"] = pd.to_datetime(
+    monthly_qty["출고년월"] + "-01"
+)
+
+monthly_qty = monthly_qty.sort_values("출고년월_dt")
+
+fig_qty = px.bar(
+    monthly_qty,
+    x="출고년월_dt",
+    y="총내품출고수량"
+)
+
+st.plotly_chart(fig_qty, use_container_width=True)
+
+# -----------------------------------
+# 💰 제품별 마진
+# -----------------------------------
+
+st.subheader("💰 제품별 마진")
+
+item_margin = (
+    filtered_df
+    .groupby("내품상품명")[["품목별매출(VAT제외)", "마진"]]
+    .sum()
+    .reset_index()
+)
+
+fig_margin = px.bar(
+    item_margin,
+    x="내품상품명",
+    y="마진"
+)
+
+st.plotly_chart(fig_margin, use_container_width=True)
 
 # -----------------------------------
 # 📊 채널별 매출
@@ -375,4 +546,3 @@ st.download_button(
 
 
 st.success("🚀 Lingtea Dashboard Ready")
-
