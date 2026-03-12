@@ -362,19 +362,26 @@ st.plotly_chart(fig_trend, use_container_width=True)
 
 st.subheader("🔥 제품 × 월 매출 히트맵")
 
+top_items = (
+    filtered_df
+    .groupby("내품상품명")["품목별매출(VAT제외)"]
+    .sum()
+    .sort_values(ascending=False)
+    .head(10)
+    .index
+)
+
+heatmap_df = filtered_df[
+    filtered_df["내품상품명"].isin(top_items)
+]
+
 heatmap_df = pd.pivot_table(
-    filtered_df,
+    heatmap_df,
     values="품목별매출(VAT제외)",
     index="내품상품명",
     columns="출고년월",
     aggfunc="sum",
     fill_value=0
-)
-
-fig_heatmap = px.imshow(
-    heatmap_df,
-    text_auto=True,
-    aspect="auto"
 )
 
 st.plotly_chart(fig_heatmap, use_container_width=True)
@@ -390,18 +397,6 @@ monthly_qty = (
     .groupby("출고년월")["총내품출고수량"]
     .sum()
     .reset_index()
-)
-
-monthly_qty["출고년월_dt"] = pd.to_datetime(
-    monthly_qty["출고년월"] + "-01"
-)
-
-monthly_qty = monthly_qty.sort_values("출고년월_dt")
-
-fig_qty = px.bar(
-    monthly_qty,
-    x="출고년월_dt",
-    y="총내품출고수량"
 )
 
 st.plotly_chart(fig_qty, use_container_width=True)
@@ -546,3 +541,4 @@ st.download_button(
 
 
 st.success("🚀 Lingtea Dashboard Ready")
+
