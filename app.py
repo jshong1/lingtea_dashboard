@@ -1,12 +1,14 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import gspread
 import io
-from google.oauth2.service_account import Credentials
-import plotly.express as px
+import os
 from datetime import datetime
+
+import gspread
+import numpy as np
+import pandas as pd
+import plotly.express as px
+import streamlit as st
 from dateutil.relativedelta import relativedelta
+from google.oauth2.service_account import Credentials
 
 # -----------------------------------
 # 기본 설정
@@ -18,531 +20,574 @@ st.set_page_config(
 )
 
 st.title("📊 Lingtea Dashboard")
+st.caption("매출 · 출고 · 채널 · 제품 수익성 대시보드")
+
+SHEET_ID = "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
 
 # -----------------------------------
-# 🔐 화이트리스트 설정
+# 유틸 함수
 # -----------------------------------
 
-ALLOWED_USERS = [
-    "js.hong1@lingtea.co.kr",
-    "finance@company.com",
-    "marketing@company.com"
-]
-
-# -----------------------------------
-# 🔐 로그인 처리 (로컬 + 클라우드 호환)
-# -----------------------------------
-user_email = "public_user"
-
-# -----------------------------------
-# 📥 Google Sheets 로드 (Cloud + 로컬 겸용)
-# -----------------------------------
-
-@st.cache_data(ttl=600)
-def load_data():
-
+def get_gspread_client():
     scope = [
         "https://www.googleapis.com/auth/spreadsheets.readonly"
     ]
 
-    import os
-
-    # 🔥 로컬 실행이면 JSON 파일 사용
     if os.path.exists("service_account.json"):
         creds = Credentials.from_service_account_file(
             "service_account.json",
             scopes=scope
         )
-
-    # 🔥 Streamlit Cloud 실행이면 Secrets 사용
     else:
         creds = Credentials.from_service_account_info(
             st.secrets["gcp_service_account"],
             scopes=scope
         )
 
-    client = gspread.authorize(creds)
+    return gspread.authorize(creds)
 
-    sheet = client.open_by_key(
-        "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
-    ).worksheet("VIEW_TABLE")
 
-    data = sheet.get_all_values()
+def to_numeric_clean(series: pd.Series) -> pd.Series:
+    return pd.to_numeric(
+        series.astype(str).str.replace(",", "", regex=False).str.replace("%", "", regex=False).str.strip(),
+        errors="coerce"
+    )
 
+
+def format_won(value: float) -> str:
+    if pd.isna(value):
+        return "-"
+    return f"{value:,.0f} 원"
+
+
+def format_uk(value: float) -> str:
+    if pd.isna(value):
+        return "-"
+    return f"{value / 100000000:.1f} 억"
+
+
+def format_pct(value: float) -> str:
+    if pd.isna(value):
+        return "-"
+    return f"{value:.1%}"
+
+
+# -----------------------------------
+# VIEW_TABLE 로드
+# -----------------------------------
+
+@st.cache_data(ttl=600)
+def load_view_data():
+    client = get_gspread_client()
+
+    ws = client.open_by_key(SHEET_ID).worksheet("VIEW_TABLE")
+    data = ws.get_all_values()
     df = pd.DataFrame(data[1:], columns=data[0])
 
-    df = df[[
+    use_cols = [
         "출고일자",
         "출고년월",
         "거래처코드",
         "내품상품명",
         "총내품출고수량",
         "품목별매출(VAT제외)"
-    ]]
+    ]
+    df = df[use_cols].copy()
 
     df["출고일자"] = pd.to_datetime(df["출고일자"], errors="coerce")
+    df["출고년월"] = df["출고년월"].astype(str)
 
-    df["총내품출고수량"] = (
-        df["총내품출고수량"]
-        .astype(str)
-        .str.replace(",", "", regex=False)
-    )
-    df["총내품출고수량"] = pd.to_numeric(
-        df["총내품출고수량"],
-        errors="coerce"
-    )
-
-    df["품목별매출(VAT제외)"] = (
-        df["품목별매출(VAT제외)"]
-        .astype(str)
-        .str.replace(",", "", regex=False)
-    )
-    df["품목별매출(VAT제외)"] = pd.to_numeric(
-        df["품목별매출(VAT제외)"],
-        errors="coerce"
-    )
+    df["총내품출고수량"] = to_numeric_clean(df["총내품출고수량"])
+    df["품목별매출(VAT제외)"] = to_numeric_clean(df["품목별매출(VAT제외)"])
 
     # 최근 12개월 컷
     today = datetime.today()
     one_year_ago = today - relativedelta(months=12)
-    df = df[df["출고일자"] >= one_year_ago]
-
-    df["출고년월"] = df["출고년월"].astype(str)
+    df = df[df["출고일자"] >= one_year_ago].copy()
 
     return df
 
 
-df = load_data()
-
 # -----------------------------------
-# 📦 MASTER DATA 로드
+# MASTER 로드
 # -----------------------------------
 
 @st.cache_data(ttl=600)
-def load_master():
+def load_master_data():
+    client = get_gspread_client()
 
-    scope = [
-        "https://www.googleapis.com/auth/spreadsheets.readonly"
-    ]
-
-    import os
-
-    if os.path.exists("service_account.json"):
-        creds = Credentials.from_service_account_file(
-            "service_account.json",
-            scopes=scope
-        )
-    else:
-        creds = Credentials.from_service_account_info(
-            st.secrets["gcp_service_account"],
-            scopes=scope
-        )
-
-    client = gspread.authorize(creds)
-
-    # ITEM MASTER
-    item_ws = client.open_by_key(
-        "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
-    ).worksheet("ITEM_MASTER")
-
+    # ITEM_MASTER
+    item_ws = client.open_by_key(SHEET_ID).worksheet("ITEM_MASTER")
     item_data = item_ws.get_all_values()
-    item_df = pd.DataFrame(item_data[1:], columns=item_data[0])
+    item_df = pd.DataFrame(item_data[1:], columns=item_data[0]).copy()
 
-    item_df["제품원가"] = pd.to_numeric(
-        item_df["제품원가"],
-        errors="coerce"
-    )
+    if "제품원가" not in item_df.columns:
+        item_df["제품원가"] = np.nan
 
-    # CUSTOMER MASTER
-    cust_ws = client.open_by_key(
-        "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
-    ).worksheet("CUSTOMER_MASTER")
+    item_df["제품원가"] = to_numeric_clean(item_df["제품원가"])
 
+    # CUSTOMER_MASTER
+    cust_ws = client.open_by_key(SHEET_ID).worksheet("CUSTOMER_MASTER")
     cust_data = cust_ws.get_all_values()
-    cust_df = pd.DataFrame(cust_data[1:], columns=cust_data[0])
+    cust_df = pd.DataFrame(cust_data[1:], columns=cust_data[0]).copy()
 
-    cust_df["수수료율"] = pd.to_numeric(
-        cust_df["수수료율"],
-        errors="coerce"
+    # 컬럼 없을 때 방어
+    if "거래처분류" not in cust_df.columns:
+        cust_df["거래처분류"] = "미분류"
+    if "수수료율" not in cust_df.columns:
+        cust_df["수수료율"] = 0
+
+    cust_df["수수료율"] = to_numeric_clean(cust_df["수수료율"])
+
+    # 12, 3.5 같이 입력된 경우 %로 간주하여 0.12, 0.035 변환
+    cust_df["수수료율"] = np.where(
+        cust_df["수수료율"] > 1,
+        cust_df["수수료율"] / 100,
+        cust_df["수수료율"]
     )
+
+    cust_df["거래처분류"] = cust_df["거래처분류"].replace("", "미분류").fillna("미분류")
 
     return item_df, cust_df
 
 
-item_df, cust_df = load_master()
+# -----------------------------------
+# 데이터 결합
+# -----------------------------------
+
+@st.cache_data(ttl=600)
+def build_dataset():
+    df = load_view_data()
+    item_df, cust_df = load_master_data()
+
+    merged = df.merge(
+        item_df[["상품명", "제품원가"]],
+        left_on="내품상품명",
+        right_on="상품명",
+        how="left"
+    )
+
+    merged = merged.merge(
+        cust_df[["거래처명", "거래처분류", "수수료율"]],
+        left_on="거래처코드",
+        right_on="거래처명",
+        how="left"
+    )
+
+    merged["거래처분류"] = merged["거래처분류"].fillna("미분류")
+    merged["수수료율"] = merged["수수료율"].fillna(0)
+    merged["제품원가"] = merged["제품원가"].fillna(0)
+
+    merged["원가총액"] = merged["총내품출고수량"] * merged["제품원가"]
+    merged["채널수수료"] = merged["품목별매출(VAT제외)"] * merged["수수료율"]
+    merged["마진"] = (
+        merged["품목별매출(VAT제외)"]
+        - merged["원가총액"]
+        - merged["채널수수료"]
+    )
+    merged["마진율"] = np.where(
+        merged["품목별매출(VAT제외)"] != 0,
+        merged["마진"] / merged["품목별매출(VAT제외)"],
+        0
+    )
+
+    return merged
+
+
+df = build_dataset()
 
 # -----------------------------------
-# 🎛 필터 영역
+# 사이드바 필터
 # -----------------------------------
 
 st.sidebar.header("📌 필터")
 
-# -------------------------
-# 출고년월
-# -------------------------
+all_months = sorted(df["출고년월"].dropna().unique())
+all_channel_groups = sorted(df["거래처분류"].dropna().unique())
+all_customers = sorted(df["거래처코드"].dropna().unique())
+all_items = sorted(df["내품상품명"].dropna().unique())
 
-all_months = sorted(df["출고년월"].unique())
-select_all_months = st.sidebar.checkbox("전체 출고년월 선택", value=True)
+selected_months = st.sidebar.multiselect(
+    "출고년월",
+    options=all_months,
+    default=all_months
+)
 
-if select_all_months:
-    selected_months = all_months
-else:
-    selected_months = st.sidebar.multiselect(
-        "출고년월 선택",
-        options=all_months
-    )
+selected_channel_groups = st.sidebar.multiselect(
+    "채널구분",
+    options=all_channel_groups,
+    default=all_channel_groups
+)
 
-# -------------------------
-# 채널
-# -------------------------
+selected_customers = st.sidebar.multiselect(
+    "거래처명",
+    options=all_customers,
+    default=all_customers
+)
 
-all_channels = sorted(df["거래처코드"].unique())
-select_all_channels = st.sidebar.checkbox("전체 채널 선택", value=True)
-
-if select_all_channels:
-    selected_channels = all_channels
-else:
-    selected_channels = st.sidebar.multiselect(
-        "채널 선택",
-        options=all_channels
-    )
-
-# -------------------------
-# 품목
-# -------------------------
-
-all_items = sorted(df["내품상품명"].unique())
-select_all_items = st.sidebar.checkbox("전체 품목 선택", value=True)
-
-if select_all_items:
-    selected_items = all_items
-else:
-    selected_items = st.sidebar.multiselect(
-        "품목 선택",
-        options=all_items
-    )
-# -----------------------------------
-# 📊 필터 적용 데이터
-# -----------------------------------
+selected_items = st.sidebar.multiselect(
+    "품목",
+    options=all_items,
+    default=all_items
+)
 
 filtered_df = df[
     (df["출고년월"].isin(selected_months)) &
-    (df["거래처코드"].isin(selected_channels)) &
+    (df["거래처분류"].isin(selected_channel_groups)) &
+    (df["거래처코드"].isin(selected_customers)) &
     (df["내품상품명"].isin(selected_items))
-]
+].copy()
 
 # -----------------------------------
-# 💰 MASTER MERGE
+# 빈 데이터 방어
 # -----------------------------------
 
-filtered_df = filtered_df.merge(
-    item_df[["상품명", "제품원가"]],
-    left_on="내품상품명",
-    right_on="상품명",
-    how="left"
-)
-
-filtered_df = filtered_df.merge(
-    cust_df[["거래처명", "거래처분류", "수수료율"]],
-    left_on="거래처코드",
-    right_on="거래처명",
-    how="left"
-)
+if filtered_df.empty:
+    st.warning("선택한 조건에 해당하는 데이터가 없습니다.")
+    st.stop()
 
 # -----------------------------------
-# 💰 마진 계산
-# -----------------------------------
-
-filtered_df["원가총액"] = (
-    filtered_df["총내품출고수량"] *
-    filtered_df["제품원가"]
-)
-
-filtered_df["채널수수료"] = (
-    filtered_df["품목별매출(VAT제외)"] *
-    filtered_df["수수료율"]
-)
-
-filtered_df["마진"] = (
-    filtered_df["품목별매출(VAT제외)"]
-    - filtered_df["원가총액"]
-    - filtered_df["채널수수료"]
-)
-
-filtered_df["마진율"] = (
-    filtered_df["마진"] /
-    filtered_df["품목별매출(VAT제외)"]
-)
-
-# -----------------------------------
-# 💎 KPI 계산 (최근 선택 월 기준 전월 대비)
+# KPI
 # -----------------------------------
 
 total_qty = filtered_df["총내품출고수량"].sum()
 total_sales = filtered_df["품목별매출(VAT제외)"].sum()
+total_margin = filtered_df["마진"].sum()
+margin_rate = total_margin / total_sales if total_sales != 0 else 0
 
-monthly_sales = (
-    filtered_df.groupby("출고년월")["품목별매출(VAT제외)"]
+monthly_summary = (
+    filtered_df.groupby("출고년월", as_index=False)[["품목별매출(VAT제외)", "마진", "총내품출고수량"]]
     .sum()
-    .reset_index()
 )
 
-# 날짜 정렬 안정화
-monthly_sales["출고년월_dt"] = pd.to_datetime(monthly_sales["출고년월"] + "-01")
-monthly_sales = monthly_sales.sort_values("출고년월_dt")
+monthly_summary["출고년월_dt"] = pd.to_datetime(monthly_summary["출고년월"] + "-01", errors="coerce")
+monthly_summary = monthly_summary.sort_values("출고년월_dt")
 
-if len(monthly_sales) >= 2:
-    current_month_sales = monthly_sales.iloc[-1]["품목별매출(VAT제외)"]
-    previous_month_sales = monthly_sales.iloc[-2]["품목별매출(VAT제외)"]
-
-    mom = ((current_month_sales - previous_month_sales) / previous_month_sales * 100) if previous_month_sales != 0 else 0
+if len(monthly_summary) >= 2:
+    current_sales = monthly_summary.iloc[-1]["품목별매출(VAT제외)"]
+    previous_sales = monthly_summary.iloc[-2]["품목별매출(VAT제외)"]
+    mom_sales = ((current_sales - previous_sales) / previous_sales) if previous_sales != 0 else 0
 else:
-    mom = 0
+    mom_sales = 0
 
-top_channel = (
-    filtered_df.groupby("거래처코드")["품목별매출(VAT제외)"]
-    .sum()
-    .idxmax()
+top_channel_group = (
+    filtered_df.groupby("거래처분류")["품목별매출(VAT제외)"].sum().sort_values(ascending=False).index[0]
     if not filtered_df.empty else "-"
 )
 
-# -----------------------------------
-# 📊 KPI 카드
-# -----------------------------------
-
-col1, col2, col3, col4 = st.columns(4)
-
-col1.metric("총 출고수량", f"{total_qty:,.0f}")
-col2.metric("총 매출액(VAT제외)", f"{total_sales:,.0f} 원")
-col3.metric("전월 대비 (선택기준)", f"{mom:.2f} %")
-col4.metric("Top 채널", top_channel)
+k1, k2, k3, k4, k5 = st.columns(5)
+k1.metric("총 매출", format_uk(total_sales))
+k2.metric("총 출고량", f"{total_qty:,.0f}")
+k3.metric("총 마진", format_uk(total_margin))
+k4.metric("마진율", format_pct(margin_rate))
+k5.metric("Top 채널구분", top_channel_group, delta=f"{mom_sales:.1%} MoM")
 
 st.divider()
 
 # -----------------------------------
-# 📈 월별 추이
-# -----------------------------------
-st.subheader("📈 월별 매출 추이")
-
-monthly_trend = (
-    filtered_df
-    .groupby("출고년월")["품목별매출(VAT제외)"]
-    .sum()
-    .reset_index()
-)
-
-monthly_trend["출고년월_dt"] = pd.to_datetime(
-    monthly_trend["출고년월"] + "-01"
-)
-
-monthly_trend = monthly_trend.sort_values("출고년월_dt")
-
-# 🔥 억 단위 변환
-monthly_trend["매출(억원)"] = monthly_trend["품목별매출(VAT제외)"] / 100000000
-
-fig_trend = px.line(
-    monthly_trend,
-    x="출고년월_dt",
-    y="매출(억원)",
-    markers=True
-)
-
-fig_trend.update_layout(
-    xaxis_title="출고년월",
-    yaxis_title="매출액 (억원)"
-)
-
-fig_trend.update_xaxes(tickformat="%Y-%m")
-
-st.plotly_chart(fig_trend, use_container_width=True)
-
-# -----------------------------------
-# 🔥 제품 × 월 히트맵
+# 탭
 # -----------------------------------
 
-st.subheader("🔥 제품 × 월 매출 히트맵")
-
-heatmap_df = pd.pivot_table(
-    filtered_df,
-    values="품목별매출(VAT제외)",
-    index="내품상품명",
-    columns="출고년월",
-    aggfunc="sum",
-    fill_value=0
-)
-
-fig_heatmap = px.imshow(
-    heatmap_df,
-    text_auto=True,
-    aspect="auto"
-)
-
-st.plotly_chart(fig_heatmap, use_container_width=True)
+tab1, tab2, tab3 = st.tabs(["📈 종합", "📦 제품 분석", "🏪 채널 분석"])
 
 # -----------------------------------
-# 📦 월별 출고량
+# 종합 탭
 # -----------------------------------
 
-st.subheader("📦 월별 출고량")
+with tab1:
+    c1, c2 = st.columns(2)
 
-monthly_qty = (
-    filtered_df
-    .groupby("출고년월")["총내품출고수량"]
-    .sum()
-    .reset_index()
-)
+    with c1:
+        st.subheader("📈 월별 매출 추이")
 
-monthly_qty["출고년월_dt"] = pd.to_datetime(
-    monthly_qty["출고년월"] + "-01"
-)
+        monthly_sales = monthly_summary.copy()
+        monthly_sales["매출(억원)"] = monthly_sales["품목별매출(VAT제외)"] / 100000000
 
-monthly_qty = monthly_qty.sort_values("출고년월_dt")
+        fig_sales = px.line(
+            monthly_sales,
+            x="출고년월_dt",
+            y="매출(억원)",
+            markers=True
+        )
+        fig_sales.update_layout(
+            xaxis_title="출고년월",
+            yaxis_title="매출(억원)"
+        )
+        fig_sales.update_xaxes(tickformat="%Y-%m")
+        st.plotly_chart(fig_sales, use_container_width=True)
 
-fig_qty = px.bar(
-    monthly_qty,
-    x="출고년월_dt",
-    y="총내품출고수량"
-)
+    with c2:
+        st.subheader("💰 월별 마진 추이")
 
-st.plotly_chart(fig_qty, use_container_width=True)
+        monthly_margin = monthly_summary.copy()
+        monthly_margin["마진(억원)"] = monthly_margin["마진"] / 100000000
 
-# -----------------------------------
-# 💰 제품별 마진
-# -----------------------------------
+        fig_margin_month = px.line(
+            monthly_margin,
+            x="출고년월_dt",
+            y="마진(억원)",
+            markers=True
+        )
+        fig_margin_month.update_layout(
+            xaxis_title="출고년월",
+            yaxis_title="마진(억원)"
+        )
+        fig_margin_month.update_xaxes(tickformat="%Y-%m")
+        st.plotly_chart(fig_margin_month, use_container_width=True)
 
-st.subheader("💰 제품별 마진")
+    st.subheader("📦 월별 출고량")
 
-item_margin = (
-    filtered_df
-    .groupby("내품상품명")[["품목별매출(VAT제외)", "마진"]]
-    .sum()
-    .reset_index()
-)
+    monthly_qty = monthly_summary.copy()
 
-fig_margin = px.bar(
-    item_margin,
-    x="내품상품명",
-    y="마진"
-)
+    fig_qty = px.bar(
+        monthly_qty,
+        x="출고년월_dt",
+        y="총내품출고수량"
+    )
+    fig_qty.update_layout(
+        xaxis_title="출고년월",
+        yaxis_title="출고수량"
+    )
+    fig_qty.update_xaxes(tickformat="%Y-%m")
+    st.plotly_chart(fig_qty, use_container_width=True)
 
-st.plotly_chart(fig_margin, use_container_width=True)
+    st.subheader("📋 월별 요약 테이블")
 
-# -----------------------------------
-# 📊 채널별 매출
-# -----------------------------------
+    monthly_table = monthly_summary[[
+        "출고년월", "총내품출고수량", "품목별매출(VAT제외)", "마진"
+    ]].copy()
 
-st.subheader("📊 채널별 매출")
-
-channel_sales = (
-    filtered_df.groupby("거래처코드")["품목별매출(VAT제외)"]
-    .sum()
-    .reset_index()
-    .sort_values(by="품목별매출(VAT제외)", ascending=False)
-)
-
-fig_channel = px.bar(
-    channel_sales,
-    x="거래처코드",
-    y="품목별매출(VAT제외)"
-)
-
-st.plotly_chart(fig_channel, use_container_width=True)
-
-# -----------------------------------
-# 🏆 품목별 랭킹
-# -----------------------------------
-st.subheader("🏆 품목별 랭킹")
-
-item_rank = (
-    filtered_df
-    .groupby("내품상품명")["품목별매출(VAT제외)"]
-    .sum()
-    .reset_index()
-    .sort_values(by="품목별매출(VAT제외)", ascending=False)
-)
-
-item_rank = item_rank.rename(
-    columns={"품목별매출(VAT제외)": "품목별매출액(VAT제외)"}
-)
-
-# 🔥 상위 3개 강조 함수
-def highlight_top3(s):
-    top3 = s.nlargest(3).values
-    return [
-        "background-color: #FFD700; font-weight: bold" if v in top3 else ""
-        for v in s
-    ]
-
-styled_rank = (
-    item_rank
-    .style
-    .format({"품목별매출액(VAT제외)": "{:,.0f}"})
-    .apply(highlight_top3, subset=["품목별매출액(VAT제외)"])
-)
-
-st.dataframe(styled_rank, use_container_width=True)
-
-# -----------------------------------
-# 📊 거래처 × 월 피벗
-# -----------------------------------
-st.subheader("📊 거래처 × 월 피벗")
-
-pivot_table = pd.pivot_table(
-    filtered_df,
-    values="품목별매출(VAT제외)",
-    index="거래처코드",
-    columns="출고년월",
-    aggfunc="sum",
-    fill_value=0
-)
-
-# 🔥 최신 선택 월 기준 정렬
-latest_month = sorted(selected_months)[-1]
-
-if latest_month in pivot_table.columns:
-    pivot_table = pivot_table.sort_values(
-        by=latest_month,
-        ascending=False
+    monthly_table["마진율"] = np.where(
+        monthly_table["품목별매출(VAT제외)"] != 0,
+        monthly_table["마진"] / monthly_table["품목별매출(VAT제외)"],
+        0
     )
 
-# 🔥 상위 3개 강조
-def highlight_top3_pivot(df):
-    if latest_month in df.columns:
-        top3_vals = df[latest_month].nlargest(3).values
-        return df.style.apply(
-            lambda col: [
-                "background-color: #C6F6D5; font-weight: bold"
-                if (col.name == latest_month and v in top3_vals)
-                else ""
-                for v in col
-            ]
+    monthly_table = monthly_table.rename(columns={
+        "총내품출고수량": "출고수량",
+        "품목별매출(VAT제외)": "매출액"
+    })
+
+    st.dataframe(
+        monthly_table.style.format({
+            "출고수량": "{:,.0f}",
+            "매출액": "{:,.0f}",
+            "마진": "{:,.0f}",
+            "마진율": "{:.1%}"
+        }),
+        use_container_width=True
+    )
+
+# -----------------------------------
+# 제품 분석 탭
+# -----------------------------------
+
+with tab2:
+    product_summary = (
+        filtered_df.groupby("내품상품명", as_index=False)[["총내품출고수량", "품목별매출(VAT제외)", "마진"]]
+        .sum()
+    )
+    product_summary["마진율"] = np.where(
+        product_summary["품목별매출(VAT제외)"] != 0,
+        product_summary["마진"] / product_summary["품목별매출(VAT제외)"],
+        0
+    )
+    product_summary = product_summary.sort_values("품목별매출(VAT제외)", ascending=False)
+
+    top10_products = product_summary.head(10).copy()
+
+    p1, p2 = st.columns(2)
+
+    with p1:
+        st.subheader("🏆 Top10 제품 매출")
+
+        fig_top_product = px.bar(
+            top10_products.sort_values("품목별매출(VAT제외)", ascending=True),
+            x="품목별매출(VAT제외)",
+            y="내품상품명",
+            orientation="h"
         )
-    return df.style
+        fig_top_product.update_layout(
+            xaxis_title="매출액",
+            yaxis_title="제품명"
+        )
+        st.plotly_chart(fig_top_product, use_container_width=True)
 
-styled_pivot = (
-    highlight_top3_pivot(pivot_table)
-    .format("{:,.0f}")
-)
+    with p2:
+        st.subheader("💰 Top10 제품 마진")
 
-st.dataframe(styled_pivot, use_container_width=True)
+        fig_top_product_margin = px.bar(
+            top10_products.sort_values("마진", ascending=True),
+            x="마진",
+            y="내품상품명",
+            orientation="h"
+        )
+        fig_top_product_margin.update_layout(
+            xaxis_title="마진액",
+            yaxis_title="제품명"
+        )
+        st.plotly_chart(fig_top_product_margin, use_container_width=True)
+
+    st.subheader("🔥 Top10 제품 × 월 매출 히트맵")
+
+    top10_names = top10_products["내품상품명"].tolist()
+    heatmap_source = filtered_df[filtered_df["내품상품명"].isin(top10_names)].copy()
+
+    heatmap_df = pd.pivot_table(
+        heatmap_source,
+        values="품목별매출(VAT제외)",
+        index="내품상품명",
+        columns="출고년월",
+        aggfunc="sum",
+        fill_value=0
+    )
+
+    # 월 컬럼 정렬
+    sorted_heatmap_cols = sorted(heatmap_df.columns.tolist())
+    heatmap_df = heatmap_df[sorted_heatmap_cols]
+
+    # 억원 단위로 변환
+    heatmap_df_uk = heatmap_df / 100000000
+
+    fig_heatmap = px.imshow(
+        heatmap_df_uk,
+        text_auto=".1f",
+        aspect="auto",
+        labels=dict(color="매출(억원)")
+    )
+    fig_heatmap.update_layout(
+        xaxis_title="출고년월",
+        yaxis_title="제품명"
+    )
+    st.plotly_chart(fig_heatmap, use_container_width=True)
+
+    st.subheader("📋 제품 수익성 요약")
+
+    product_view = top10_products.rename(columns={
+        "내품상품명": "제품명",
+        "총내품출고수량": "출고수량",
+        "품목별매출(VAT제외)": "매출액"
+    })
+
+    st.dataframe(
+        product_view.style.format({
+            "출고수량": "{:,.0f}",
+            "매출액": "{:,.0f}",
+            "마진": "{:,.0f}",
+            "마진율": "{:.1%}"
+        }),
+        use_container_width=True
+    )
 
 # -----------------------------------
-# 엑셀 다운로드 버튼 추가
+# 채널 분석 탭
 # -----------------------------------
-def convert_df_to_excel(df):
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, sheet_name="Pivot")
-    return output.getvalue()
 
-excel_data = convert_df_to_excel(pivot_table)
+with tab3:
+    channel_summary = (
+        filtered_df.groupby("거래처분류", as_index=False)[["품목별매출(VAT제외)", "마진", "채널수수료"]]
+        .sum()
+    )
+    channel_summary["마진율"] = np.where(
+        channel_summary["품목별매출(VAT제외)"] != 0,
+        channel_summary["마진"] / channel_summary["품목별매출(VAT제외)"],
+        0
+    )
+    channel_summary["수수료율_실적"] = np.where(
+        channel_summary["품목별매출(VAT제외)"] != 0,
+        channel_summary["채널수수료"] / channel_summary["품목별매출(VAT제외)"],
+        0
+    )
+    channel_summary = channel_summary.sort_values("품목별매출(VAT제외)", ascending=False)
 
-st.download_button(
-    label="📥 피벗 엑셀 다운로드",
-    data=excel_data,
-    file_name="거래처_월_피벗.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
+    ch1, ch2 = st.columns(2)
 
+    with ch1:
+        st.subheader("📊 채널별 매출")
+
+        fig_channel_sales = px.bar(
+            channel_summary.sort_values("품목별매출(VAT제외)", ascending=True),
+            x="품목별매출(VAT제외)",
+            y="거래처분류",
+            orientation="h"
+        )
+        fig_channel_sales.update_layout(
+            xaxis_title="매출액",
+            yaxis_title="채널구분"
+        )
+        st.plotly_chart(fig_channel_sales, use_container_width=True)
+
+    with ch2:
+        st.subheader("💹 채널별 마진율")
+
+        fig_channel_margin_rate = px.bar(
+            channel_summary.sort_values("마진율", ascending=True),
+            x="마진율",
+            y="거래처분류",
+            orientation="h",
+            text_auto=".1%"
+        )
+        fig_channel_margin_rate.update_layout(
+            xaxis_title="마진율",
+            yaxis_title="채널구분"
+        )
+        st.plotly_chart(fig_channel_margin_rate, use_container_width=True)
+
+    st.subheader("📋 채널 수익성 요약")
+
+    channel_view = channel_summary.rename(columns={
+        "거래처분류": "채널구분",
+        "품목별매출(VAT제외)": "매출액",
+        "채널수수료": "수수료액"
+    })
+
+    st.dataframe(
+        channel_view.style.format({
+            "매출액": "{:,.0f}",
+            "마진": "{:,.0f}",
+            "수수료액": "{:,.0f}",
+            "마진율": "{:.1%}",
+            "수수료율_실적": "{:.1%}"
+        }),
+        use_container_width=True
+    )
+
+    st.subheader("📊 거래처 × 월 매출 피벗")
+
+    customer_pivot = pd.pivot_table(
+        filtered_df,
+        values="품목별매출(VAT제외)",
+        index="거래처코드",
+        columns="출고년월",
+        aggfunc="sum",
+        fill_value=0
+    )
+
+    sorted_cols = sorted(customer_pivot.columns.tolist())
+    customer_pivot = customer_pivot[sorted_cols]
+
+    if len(sorted_cols) > 0:
+        latest_month = sorted_cols[-1]
+        customer_pivot = customer_pivot.sort_values(by=latest_month, ascending=False)
+
+    st.dataframe(
+        customer_pivot.style.format("{:,.0f}"),
+        use_container_width=True
+    )
+
+    def convert_df_to_excel(df_to_save):
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine="openpyxl") as writer:
+            df_to_save.to_excel(writer, sheet_name="거래처월피벗")
+        return output.getvalue()
+
+    excel_data = convert_df_to_excel(customer_pivot)
+
+    st.download_button(
+        label="📥 거래처 × 월 피벗 다운로드",
+        data=excel_data,
+        file_name="거래처_월_피벗.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
 
 st.success("🚀 Lingtea Dashboard Ready")
