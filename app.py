@@ -136,14 +136,15 @@ def load_master():
     cust_df = pd.DataFrame(cust_data[1:], columns=cust_data[0]).copy()
 
     if "거래처분류" not in cust_df.columns:
-        cust_df["거래처분류"] = "미분류"
+        cust_df["거래처분류"] = np.nan
 
     if "수수료율" not in cust_df.columns:
         cust_df["수수료율"] = 0
 
     cust_df["수수료율"] = clean_numeric(cust_df["수수료율"]).fillna(0)
     cust_df["수수료율"] = np.where(cust_df["수수료율"] > 1, cust_df["수수료율"] / 100, cust_df["수수료율"])
-    cust_df["거래처분류"] = cust_df["거래처분류"].fillna("미분류").replace("", "미분류")
+    cust_df["거래처명"] = cust_df["거래처명"].astype(str).str.strip()
+    cust_df["거래처분류"] = cust_df["거래처분류"].astype(str).str.strip()
 
     return item_df, cust_df
 
@@ -172,8 +173,11 @@ def build_dataset():
     )
 
     merged["제품원가"] = merged["제품원가"].fillna(0)
-    merged["거래처분류"] = merged["거래처분류"].fillna("미분류")
     merged["수수료율"] = merged["수수료율"].fillna(0)
+
+    # 미분류 제거: CUSTOMER_MASTER에 없는 거래처는 제외
+    merged["거래처분류"] = merged["거래처분류"].replace("", np.nan)
+    merged = merged[merged["거래처분류"].notna()].copy()
 
     merged["원가총액"] = merged["총내품출고수량"] * merged["제품원가"]
     merged["채널수수료"] = merged["품목별매출(VAT제외)"] * merged["수수료율"]
@@ -291,6 +295,7 @@ with trend_col1:
     )
     fig_sales.update_xaxes(tickformat="%Y-%m")
     fig_sales.update_layout(xaxis_title="출고년월", yaxis_title="매출액")
+    fig_sales.update_yaxes(tickformat=",", ticksuffix=" 원")
     st.plotly_chart(fig_sales, use_container_width=True)
 
 with trend_col2:
@@ -309,6 +314,7 @@ with trend_col2:
     )
     fig_qty.update_xaxes(tickformat="%Y-%m")
     fig_qty.update_layout(xaxis_title="출고년월", yaxis_title="출고량")
+    fig_qty.update_yaxes(tickformat=",")
     st.plotly_chart(fig_qty, use_container_width=True)
 
 with trend_col3:
@@ -328,6 +334,7 @@ with trend_col3:
     )
     fig_margin.update_xaxes(tickformat="%Y-%m")
     fig_margin.update_layout(xaxis_title="출고년월", yaxis_title="마진액")
+    fig_margin.update_yaxes(tickformat=",", ticksuffix=" 원")
     st.plotly_chart(fig_margin, use_container_width=True)
 
 st.divider()
@@ -346,7 +353,9 @@ with tab1:
     st.subheader("🏪 채널 분석")
 
     channel_summary = (
-        filtered_df.groupby("거래처분류", as_index=False)[["총내품출고수량", "품목별매출(VAT제외)", "마진", "채널수수료"]]
+        filtered_df.groupby("거래처분류", as_index=False)[
+            ["총내품출고수량", "품목별매출(VAT제외)", "원가총액", "마진", "채널수수료"]
+        ]
         .sum()
     )
     channel_summary["마진율"] = safe_divide(
@@ -370,6 +379,7 @@ with tab1:
             title="채널별 매출"
         )
         fig_channel_sales.update_layout(xaxis_title="매출액", yaxis_title="채널")
+        fig_channel_sales.update_xaxes(tickformat=",")
         st.plotly_chart(fig_channel_sales, use_container_width=True)
 
     with ch2:
@@ -381,6 +391,7 @@ with tab1:
             title="채널별 마진"
         )
         fig_channel_margin.update_layout(xaxis_title="마진액", yaxis_title="채널")
+        fig_channel_margin.update_xaxes(tickformat=",")
         st.plotly_chart(fig_channel_margin, use_container_width=True)
 
     st.subheader("📦 월별 채널별 출고량")
@@ -412,12 +423,28 @@ with tab1:
         "거래처분류": "채널",
         "총내품출고수량": "출고량",
         "품목별매출(VAT제외)": "매출액",
+        "원가총액": "원가",
         "채널수수료": "수수료액"
     })
+
+    channel_view = channel_view[
+        [
+            "채널",
+            "출고량",
+            "매출액",
+            "원가",
+            "마진",
+            "수수료액",
+            "마진율",
+            "수수료율(실적)"
+        ]
+    ]
+
     st.dataframe(
         channel_view.style.format({
             "출고량": "{:,.0f}",
             "매출액": "{:,.0f}",
+            "원가": "{:,.0f}",
             "마진": "{:,.0f}",
             "수수료액": "{:,.0f}",
             "마진율": "{:.2%}",
@@ -458,6 +485,7 @@ with tab2:
             title=f"Top {top_n} 제품 매출"
         )
         fig_product_sales.update_layout(xaxis_title="매출액", yaxis_title="제품명")
+        fig_product_sales.update_xaxes(tickformat=",")
         st.plotly_chart(fig_product_sales, use_container_width=True)
 
     with pr2:
@@ -469,6 +497,7 @@ with tab2:
             title=f"Top {top_n} 제품 마진"
         )
         fig_product_margin.update_layout(xaxis_title="마진액", yaxis_title="제품명")
+        fig_product_margin.update_xaxes(tickformat=",")
         st.plotly_chart(fig_product_margin, use_container_width=True)
 
     st.subheader("📦 월별 제품별 출고량")
