@@ -15,11 +15,11 @@ from google.oauth2.service_account import Credentials
 # -----------------------------------
 
 st.set_page_config(
-    page_title="Lingtea Dashboard v3.2",
+    page_title="Lingtea Dashboard v3.3",
     layout="wide"
 )
 
-st.title("📊 Lingtea Dashboard v3.2")
+st.title("📊 Lingtea Dashboard v3.3")
 st.caption("월별 채널/제품 분석 + 매출/출고량/마진 통합 대시보드")
 
 SHEET_ID = "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
@@ -234,6 +234,13 @@ if filtered_df.empty:
 # -----------------------------------
 # KPI
 # -----------------------------------
+st.markdown("""
+<style>
+[data-testid="stMetricValue"] {
+    font-size: 28px;
+}
+</style>
+""", unsafe_allow_html=True)
 
 total_sales = filtered_df["품목별매출(VAT제외)"].sum()
 total_qty = filtered_df["총내품출고수량"].sum()
@@ -287,14 +294,14 @@ monthly_sales = (
 monthly_sales["출고년월_dt"] = pd.to_datetime(monthly_sales["출고년월"] + "-01", errors="coerce")
 monthly_sales = monthly_sales.sort_values("출고년월_dt")
 
-fig_sales = px.line(
+fig_sales = px.bar(
     monthly_sales,
-    x="출고년월_dt",
+    x="출고년월",
     y="품목별매출(VAT제외)",
-    markers=True,
     title="월별 매출"
 )
-fig_sales.update_xaxes(tickformat="%Y-%m")
+
+fig_sales.update_xaxes(type="category")
 fig_sales.update_layout(xaxis_title="출고년월", yaxis_title="매출액")
 fig_sales.update_yaxes(tickformat=",", ticksuffix=" 원")
 
@@ -313,11 +320,12 @@ monthly_qty = monthly_qty.sort_values("출고년월_dt")
 
 fig_qty = px.bar(
     monthly_qty,
-    x="출고년월_dt",
+    x="출고년월",
     y="총내품출고수량",
     title="월별 출고량"
 )
-fig_qty.update_xaxes(tickformat="%Y-%m")
+
+fig_qty.update_xaxes(type="category")
 fig_qty.update_layout(xaxis_title="출고년월", yaxis_title="출고량")
 fig_qty.update_yaxes(tickformat=",")
 
@@ -334,14 +342,14 @@ monthly_margin = (
 monthly_margin["출고년월_dt"] = pd.to_datetime(monthly_margin["출고년월"] + "-01", errors="coerce")
 monthly_margin = monthly_margin.sort_values("출고년월_dt")
 
-fig_margin = px.line(
+fig_margin = px.bar(
     monthly_margin,
-    x="출고년월_dt",
+    x="출고년월",
     y="마진",
-    markers=True,
     title="월별 마진"
 )
-fig_margin.update_xaxes(tickformat="%Y-%m")
+
+fig_margin.update_xaxes(type="category")
 fig_margin.update_layout(xaxis_title="출고년월", yaxis_title="마진액")
 fig_margin.update_yaxes(tickformat=",", ticksuffix=" 원")
 
@@ -617,4 +625,5 @@ with tab3:
     st.write("- 월별 제품 출고량")
     st.write("- 월별 제품 매출액")
 
-st.success("🚀 Lingtea Dashboard v3.2 Ready")
+st.success("🚀 Lingtea Dashboard v3.3 Ready")
+
