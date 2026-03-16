@@ -165,10 +165,11 @@ def build_dataset():
         how="left"
     )
 
+    merged["거래처분류"] = merged["거래처코드"]
+
     merged = merged.merge(
-        cust_df[["거래처명", "거래처분류", "수수료율"]],
-        left_on="거래처코드",
-        right_on="거래처명",
+        cust_df[["거래처분류", "수수료율"]].drop_duplicates(),
+        on="거래처분류",
         how="left"
     )
 
