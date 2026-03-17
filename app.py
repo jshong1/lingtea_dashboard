@@ -222,15 +222,93 @@ selected_items = st.sidebar.multiselect(
     default=all_items
 )
 
+# -----------------------------------
+# 비용 입력 (v3.4 추가 기능)
+# -----------------------------------
+
+st.sidebar.markdown("---")
+st.sidebar.header("💸 비용 입력")
+
+# 월별 물류비 입력
+st.sidebar.markdown("### 🚚 월별 물류비")
+
+logistics_cost_input = {}
+
+for m in all_months:
+    logistics_cost_input[m] = st.sidebar.number_input(
+        f"{m} 물류비",
+        min_value=0,
+        value=0,
+        step=10000,
+        key=f"logistics_{m}"
+    )
+
+# 제품별 광고비 입력
+st.sidebar.markdown("### 📢 제품 광고비")
+
+ad_cost_input = {}
+
+for m in all_months:
+    st.sidebar.markdown(f"**{m} 광고비**")
+
+    for item in all_items:
+        ad_cost_input[(m, item)] = st.sidebar.number_input(
+            f"{item}",
+            min_value=0,
+            value=0,
+            step=10000,
+            key=f"ad_{m}_{item}"
+        )
+
+
 filtered_df = df[
     (df["출고년월"].isin(selected_months)) &
     (df["거래처분류"].isin(selected_channel_groups)) &
     (df["내품상품명"].isin(selected_items))
 ].copy()
 
+# -----------------------------------
+# 비용 배분 계산 (v3.4 추가 기능)
+# -----------------------------------
+
+filtered_df["물류비"] = 0
+filtered_df["광고비"] = 0
+
+for m in selected_months:
+
+    month_mask = filtered_df["출고년월"] == m
+
+    month_sales = filtered_df.loc[
+        month_mask,
+        "품목별매출(VAT제외)"
+    ].sum()
+
+    # 물류비 매출 비중 배분
+    if month_sales > 0:
+
+        ratio = (
+            filtered_df.loc[month_mask, "품목별매출(VAT제외)"]
+            / month_sales
+        )
+
+        filtered_df.loc[month_mask, "물류비"] = (
+            ratio * logistics_cost_input.get(m, 0)
+        )
+
+# 광고비 입력 반영
+for (m, item), cost in ad_cost_input.items():
+
+    mask = (
+        (filtered_df["출고년월"] == m)
+        &
+        (filtered_df["내품상품명"] == item)
+    )
+
+    filtered_df.loc[mask, "광고비"] = cost
+
 if filtered_df.empty:
     st.warning("선택한 조건에 해당하는 데이터가 없습니다.")
-    st.stop()
+    st.stop()    
 
 # -----------------------------------
 # KPI
@@ -246,7 +324,23 @@ st.markdown("""
 total_sales = filtered_df["품목별매출(VAT제외)"].sum()
 total_qty = filtered_df["총내품출고수량"].sum()
 total_margin = filtered_df["마진"].sum()
-margin_rate = (total_margin / total_sales * 100) if total_sales != 0 else 0
+margin_rate = (total_margin / total_sales * 100)
+# -----------------------------------
+# 공헌이익 계산 (v3.4 추가 기능)
+# -----------------------------------
+
+filtered_df["공헌이익"] = (
+    filtered_df["마진"]
+    - filtered_df["물류비"]
+    - filtered_df["광고비"]
+)
+
+filtered_df["공헌이익률"] = safe_divide(
+    filtered_df["공헌이익"],
+    filtered_df["품목별매출(VAT제외)"]
+)
+
+if total_sales != 0 else 0
 
 monthly_kpi = (
     filtered_df.groupby("출고년월", as_index=False)[["품목별매출(VAT제외)", "총내품출고수량", "마진"]]
@@ -373,7 +467,16 @@ with tab1:
 
     channel_summary = (
         filtered_df.groupby("거래처분류", as_index=False)[
-            ["총내품출고수량", "품목별매출(VAT제외)", "원가총액", "마진", "채널수수료"]
+            [
+            "총내품출고수량",
+            "품목별매출(VAT제외)",
+            "원가총액",
+            "마진",
+            "채널수수료",
+            "물류비",
+            "광고비",
+            "공헌이익"
+            ]
         ]
         .sum()
     )
@@ -383,6 +486,10 @@ with tab1:
     )
     channel_summary["수수료율(실적)"] = safe_divide(
         channel_summary["채널수수료"],
+        channel_summary["품목별매출(VAT제외)"]
+    )
+    channel_summary["공헌이익률"] = safe_divide(
+        channel_summary["공헌이익"],
         channel_summary["품목별매출(VAT제외)"]
     )
     channel_summary = channel_summary.sort_values("품목별매출(VAT제외)", ascending=False)
@@ -480,11 +587,21 @@ with tab2:
     st.subheader("📦 제품 분석")
 
     product_summary = (
-        filtered_df.groupby("내품상품명", as_index=False)[["총내품출고수량", "품목별매출(VAT제외)", "마진"]]
-        .sum()
+        filtered_df.groupby("내품상품명", as_index=False)[[
+        "총내품출고수량",
+        "품목별매출(VAT제외)",
+        "마진",
+        "물류비",
+        "광고비",
+        "공헌이익"
+        ]].sum()
     )
     product_summary["마진율"] = safe_divide(
         product_summary["마진"],
+        product_summary["품목별매출(VAT제외)"]
+    )
+    product_summary["공헌이익률"] = safe_divide(
+        product_summary["공헌이익"],
         product_summary["품목별매출(VAT제외)"]
     )
     product_summary = product_summary.sort_values("품목별매출(VAT제외)", ascending=False)
