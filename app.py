@@ -641,50 +641,47 @@ with tab2:
         "총내품출고수량": "출고량",
         "품목별매출(VAT제외)": "매출액"
     })
-    # 광고비 입력 가능 테이블 생성
-    product_view["광고비"] = product_view.get("광고비", 0)
+
+    st.subheader("📋 제품 광고비 입력")
+
+    product_view = top_products.rename(columns={
+        "내품상품명": "제품명",
+        "총내품출고수량": "출고량",
+        "품목별매출(VAT제외)": "매출액"
+    })
     
+    # 필요한 컬럼만 남기기
+    product_view = product_view[
+        ["제품명", "출고량", "매출액", "마진"]
+    ].copy()
+    
+    # 광고비 컬럼 생성
+    product_view["광고비"] = 0
+    
+    # 숫자 정리
+    for col in ["출고량", "매출액", "마진", "광고비"]:
+        product_view[col] = product_view[col].fillna(0).astype(int)
+    
+    # 광고비 입력 테이블
     edited_product = st.data_editor(
         product_view,
         use_container_width=True,
-        num_rows="dynamic",
         column_config={
+            "출고량": st.column_config.NumberColumn(format="%,d"),
+            "매출액": st.column_config.NumberColumn(format="%,d"),
+            "마진": st.column_config.NumberColumn(format="%,d"),
             "광고비": st.column_config.NumberColumn(
                 "광고비",
-                help="제품별 광고비 입력",
                 step=10000,
-                format="%d"
-            )
+                format="%,d"
+            ),
         },
         disabled=[
             "제품명",
             "출고량",
             "매출액",
-            "마진",
-            "마진율"
+            "마진"
         ]
-    )
-    edited_product["공헌이익"] = (
-        edited_product["마진"]
-        - edited_product["광고비"]
-    )
-    
-    edited_product["공헌이익률"] = safe_divide(
-        edited_product["공헌이익"],
-        edited_product["매출액"]
-    )
-    st.dataframe(
-        edited_product.style.format({
-            "출고량": "{:,.0f}",
-            "매출액": "{:,.0f}",
-            "마진": "{:,.0f}",
-            "물류비": "{:,.0f}",
-            "광고비": "{:,.0f}",
-            "공헌이익": "{:,.0f}",
-            "마진율": "{:.2%}",
-            "공헌이익률": "{:.2%}"
-        }),
-        use_container_width=True
     )
     
     st.subheader("📊 공헌이익 반영")
