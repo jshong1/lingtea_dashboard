@@ -255,7 +255,6 @@ filtered_df = df[
 # -----------------------------------
 
 filtered_df["물류비"] = 0
-filtered_df["광고비"] = 0
 
 for m in selected_months:
 
@@ -692,7 +691,6 @@ with tab2:
         - final_product["광고비"]
     )
     
-    filtered_df["광고비"] = filtered_df["광고비"].fillna(0)
     filtered_df = filtered_df.drop(columns=["제품명"], errors="ignore")
     
     st.subheader("📊 공헌이익 반영")
