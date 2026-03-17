@@ -243,24 +243,6 @@ for m in all_months:
         key=f"logistics_{m}"
     )
 
-# 제품별 광고비 입력
-st.sidebar.markdown("### 📢 제품 광고비")
-
-ad_cost_input = {}
-
-for m in all_months:
-    st.sidebar.markdown(f"**{m} 광고비**")
-
-    for item in all_items:
-        ad_cost_input[(m, item)] = st.sidebar.number_input(
-            f"{item}",
-            min_value=0,
-            value=0,
-            step=10000,
-            key=f"ad_{m}_{item}"
-        )
-
-
 filtered_df = df[
     (df["출고년월"].isin(selected_months)) &
     (df["거래처분류"].isin(selected_channel_groups)) &
