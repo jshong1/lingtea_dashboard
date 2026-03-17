@@ -243,23 +243,6 @@ for m in all_months:
         key=f"logistics_{m}"
     )
 
-# 제품별 광고비 입력
-st.sidebar.markdown("### 📢 제품 광고비")
-
-ad_cost_input = {}
-
-for m in all_months:
-    st.sidebar.markdown(f"**{m} 광고비**")
-
-    for item in all_items:
-        ad_cost_input[(m, item)] = st.sidebar.number_input(
-            f"{item}",
-            min_value=0,
-            value=0,
-            step=10000,
-            key=f"ad_{m}_{item}"
-        )
-
 
 filtered_df = df[
     (df["출고년월"].isin(selected_months)) &
@@ -272,7 +255,6 @@ filtered_df = df[
 # -----------------------------------
 
 filtered_df["물류비"] = 0
-filtered_df["광고비"] = 0
 
 for m in selected_months:
 
@@ -294,17 +276,6 @@ for m in selected_months:
         filtered_df.loc[month_mask, "물류비"] = (
             ratio * logistics_cost_input.get(m, 0)
         )
-
-# 광고비 입력 반영
-for (m, item), cost in ad_cost_input.items():
-
-    mask = (
-        (filtered_df["출고년월"] == m)
-        &
-        (filtered_df["내품상품명"] == item)
-    )
-
-    filtered_df.loc[mask, "광고비"] = cost
 
 if filtered_df.empty:
     st.warning("선택한 조건에 해당하는 데이터가 없습니다.")
