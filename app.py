@@ -548,7 +548,7 @@ with tab1:
             "광고비": "{:,.0f}",
             "공헌이익": "{:,.0f}",
             "마진율": "{:.2%}",
-            "수수료율": "{:.2%}",
+            "수수료율(실적)": "{:.2%}",
             "공헌이익률": "{:.2%}"
         }),
         use_container_width=True
@@ -635,53 +635,30 @@ with tab2:
     product_sales_pivot = product_sales_pivot.reindex(columns=sort_month_cols(product_sales_pivot.columns.tolist()))
     st.dataframe(product_sales_pivot.style.format("{:,.0f}"), use_container_width=True)
 
-    st.subheader("📋 제품 수익성 요약")
-    product_view = top_products.rename(columns={
-        "내품상품명": "제품명",
-        "총내품출고수량": "출고량",
-        "품목별매출(VAT제외)": "매출액"
-    })
-
     st.subheader("📋 제품 광고비 입력")
 
-    product_view = top_products.rename(columns={
-        "내품상품명": "제품명",
-        "총내품출고수량": "출고량",
-        "품목별매출(VAT제외)": "매출액"
-    })
+    # 제품명만 추출 (중복 제거)
+    product_view = top_products[["내품상품명"]].drop_duplicates().copy()
     
-    # 필요한 컬럼만 남기기
-    product_view = product_view[
-        ["제품명", "출고량", "매출액", "마진"]
-    ].copy()
+    product_view = product_view.rename(columns={
+        "내품상품명": "제품명"
+    })
     
     # 광고비 컬럼 생성
     product_view["광고비"] = 0
-    
-    # 숫자 정리
-    for col in ["출고량", "매출액", "마진", "광고비"]:
-        product_view[col] = product_view[col].fillna(0).astype(int)
     
     # 광고비 입력 테이블
     edited_product = st.data_editor(
         product_view,
         use_container_width=True,
         column_config={
-            "출고량": st.column_config.NumberColumn(format="%,d"),
-            "매출액": st.column_config.NumberColumn(format="%,d"),
-            "마진": st.column_config.NumberColumn(format="%,d"),
             "광고비": st.column_config.NumberColumn(
                 "광고비",
                 step=10000,
                 format="%,d"
             ),
         },
-        disabled=[
-            "제품명",
-            "출고량",
-            "매출액",
-            "마진"
-        ]
+        disabled=["제품명"]
     )
     # -----------------------------------
     # 광고비를 filtered_df에 반영 (수정)
