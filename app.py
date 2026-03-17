@@ -683,11 +683,54 @@ with tab2:
             "마진"
         ]
     )
+    # -----------------------------------
+    # 광고비를 filtered_df에 반영 (추가)
+    # -----------------------------------
+    
+    filtered_df = filtered_df.merge(
+        edited_product[["제품명", "광고비"]],
+        left_on="내품상품명",
+        right_on="제품명",
+        how="left"
+    )
+    
+    filtered_df["광고비"] = filtered_df["광고비"].fillna(0)
     
     st.subheader("📊 공헌이익 반영")
 
+    # -----------------------------------
+    # 공헌이익 반영 테이블 (수정)
+    # -----------------------------------
+    
+    final_product = (
+        filtered_df.groupby("내품상품명", as_index=False)[
+            ["총내품출고수량", "품목별매출(VAT제외)", "마진", "물류비", "광고비", "공헌이익"]
+        ]
+        .sum()
+    )
+    
+    final_product["마진율"] = safe_divide(
+        final_product["마진"],
+        final_product["품목별매출(VAT제외)"]
+    )
+    
+    final_product["공헌이익률"] = safe_divide(
+        final_product["공헌이익"],
+        final_product["품목별매출(VAT제외)"]
+    )
+    
+    final_product = final_product.rename(columns={
+        "내품상품명": "제품명",
+        "총내품출고수량": "출고량",
+        "품목별매출(VAT제외)": "매출액"
+    })
+    
+    # 숫자 정리
+    for col in ["출고량","매출액","마진","물류비","광고비","공헌이익"]:
+        final_product[col] = final_product[col].round(0).astype(int)
+    
     st.dataframe(
-        edited_product.style.format({
+        final_product.style.format({
             "출고량": "{:,.0f}",
             "매출액": "{:,.0f}",
             "마진": "{:,.0f}",
@@ -698,6 +741,21 @@ with tab2:
             "공헌이익률": "{:.2%}"
         }),
         use_container_width=True
+    )
+
+    # -----------------------------------
+    # 공헌이익 재계산 (광고비 반영 후)
+    # -----------------------------------
+    
+    filtered_df["공헌이익"] = (
+        filtered_df["마진"]
+        - filtered_df["물류비"]
+        - filtered_df["광고비"]
+    )
+    
+    filtered_df["공헌이익률"] = safe_divide(
+        filtered_df["공헌이익"],
+        filtered_df["품목별매출(VAT제외)"]
     )
 
 # -----------------------------------
