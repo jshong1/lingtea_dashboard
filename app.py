@@ -255,6 +255,7 @@ filtered_df = df[
 # -----------------------------------
 
 filtered_df["물류비"] = 0
+filtered_df["광고비"] = 0
 
 for m in selected_months:
 
