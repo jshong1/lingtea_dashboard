@@ -532,7 +532,8 @@ with tab1:
             "마진",
             "수수료액",
             "마진율",
-            "수수료율(실적)"
+            "수수료율(실적)",
+            "공헌이익률",
         ]
     ]
 
@@ -540,11 +541,14 @@ with tab1:
         channel_view.style.format({
             "출고량": "{:,.0f}",
             "매출액": "{:,.0f}",
+            "원가": "{:,.0f}",
             "마진": "{:,.0f}",
+            "수수료액": "{:,.0f}",
             "물류비": "{:,.0f}",
             "광고비": "{:,.0f}",
             "공헌이익": "{:,.0f}",
             "마진율": "{:.2%}",
+            "수수료율": "{:.2%}",
             "공헌이익률": "{:.2%}"
         }),
         use_container_width=True
@@ -566,7 +570,7 @@ with tab2:
         "광고비",
         "공헌이익"
         ]].sum()
-    )
+    )    
     product_summary["마진율"] = safe_divide(
         product_summary["마진"],
         product_summary["품목별매출(VAT제외)"]
@@ -668,6 +672,19 @@ with tab2:
     edited_product["공헌이익률"] = safe_divide(
         edited_product["공헌이익"],
         edited_product["매출액"]
+    )
+    st.dataframe(
+        edited_product.style.format({
+            "출고량": "{:,.0f}",
+            "매출액": "{:,.0f}",
+            "마진": "{:,.0f}",
+            "물류비": "{:,.0f}",
+            "광고비": "{:,.0f}",
+            "공헌이익": "{:,.0f}",
+            "마진율": "{:.2%}",
+            "공헌이익률": "{:.2%}"
+        }),
+        use_container_width=True
     )
     
     st.subheader("📊 공헌이익 반영")
