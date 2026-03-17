@@ -669,11 +669,27 @@ with tab2:
     
     filtered_df = filtered_df.drop(columns=["광고비"], errors="ignore")
     
-    filtered_df = filtered_df.merge(
-        ad_map,
+    final_product = (
+        filtered_df.groupby("내품상품명", as_index=False)[
+            ["총내품출고수량","품목별매출(VAT제외)","마진","물류비"]
+        ].sum()
+    )
+    
+    # 광고비 merge (여기서!)
+    final_product = final_product.merge(
+        edited_product,
         left_on="내품상품명",
         right_on="제품명",
         how="left"
+    )
+    
+    final_product["광고비"] = final_product["광고비"].fillna(0)
+    
+    # 공헌이익 계산
+    final_product["공헌이익"] = (
+        final_product["마진"]
+        - final_product["물류비"]
+        - final_product["광고비"]
     )
     
     filtered_df["광고비"] = filtered_df["광고비"].fillna(0)
