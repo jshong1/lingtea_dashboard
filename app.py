@@ -684,17 +684,23 @@ with tab2:
         ]
     )
     # -----------------------------------
-    # 광고비를 filtered_df에 반영 (추가)
+    # 광고비를 filtered_df에 반영 (수정)
     # -----------------------------------
     
+    ad_map = edited_product[["제품명", "광고비"]].copy()
+    ad_map["광고비"] = ad_map["광고비"].fillna(0)
+    
+    filtered_df = filtered_df.drop(columns=["광고비"], errors="ignore")
+    
     filtered_df = filtered_df.merge(
-        edited_product[["제품명", "광고비"]],
+        ad_map,
         left_on="내품상품명",
         right_on="제품명",
         how="left"
     )
     
     filtered_df["광고비"] = filtered_df["광고비"].fillna(0)
+    filtered_df = filtered_df.drop(columns=["제품명"], errors="ignore")
     
     st.subheader("📊 공헌이익 반영")
 
