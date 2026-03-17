@@ -255,6 +255,7 @@ filtered_df = df[
 # -----------------------------------
 
 filtered_df["물류비"] = 0
+filtered_df["광고비"] = 0
 
 for m in selected_months:
 
@@ -296,6 +297,20 @@ total_sales = filtered_df["품목별매출(VAT제외)"].sum()
 total_qty = filtered_df["총내품출고수량"].sum()
 total_margin = filtered_df["마진"].sum()
 margin_rate = (total_margin / total_sales * 100) if total_sales != 0 else 0
+# -----------------------------------
+# 공헌이익 계산 (v3.4 추가 기능)
+# -----------------------------------
+
+filtered_df["공헌이익"] = (
+    filtered_df["마진"]
+    - filtered_df["물류비"]
+    - filtered_df["광고비"]
+)
+
+filtered_df["공헌이익률"] = safe_divide(
+    filtered_df["공헌이익"],
+    filtered_df["품목별매출(VAT제외)"]
+)
 
 monthly_kpi = (
     filtered_df.groupby("출고년월", as_index=False)[["품목별매출(VAT제외)", "총내품출고수량", "마진"]]
@@ -654,35 +669,14 @@ with tab2:
     
     filtered_df = filtered_df.drop(columns=["광고비"], errors="ignore")
     
-    final_product = (
-        filtered_df.groupby("내품상품명", as_index=False)[
-            ["총내품출고수량","품목별매출(VAT제외)","마진","물류비"]
-        ]
-        .sum()
-    )
-    
-    # 광고비 붙이기
-    final_product = final_product.merge(
-        edited_product,
+    filtered_df = filtered_df.merge(
+        ad_map,
         left_on="내품상품명",
         right_on="제품명",
         how="left"
     )
     
-    final_product["광고비"] = final_product["광고비"].fillna(0)
-    
-    # 공헌이익 계산
-    final_product["공헌이익"] = (
-        final_product["마진"]
-        - final_product["물류비"]
-        - final_product["광고비"]
-    )
-    
-    final_product["공헌이익률"] = safe_divide(
-        final_product["공헌이익"],
-        final_product["품목별매출(VAT제외)"]
-    )
-    
+    filtered_df["광고비"] = filtered_df["광고비"].fillna(0)
     filtered_df = filtered_df.drop(columns=["제품명"], errors="ignore")
     
     st.subheader("📊 공헌이익 반영")
