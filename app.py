@@ -667,6 +667,7 @@ with tab2:
     # 광고비 입력 테이블
     edited_product = st.data_editor(
         product_view,
+        key="ad_editor",
         use_container_width=True,
         column_config={
             "광고비": st.column_config.NumberColumn(
