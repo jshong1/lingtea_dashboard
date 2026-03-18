@@ -15,12 +15,12 @@ from google.oauth2.service_account import Credentials
 # -----------------------------------
 
 st.set_page_config(
-    page_title="Lingtea Dashboard v3.3",
+    page_title="Lingtea Dashboard v4",
     layout="wide"
 )
 
-st.title("📊 Lingtea Dashboard v3.3")
-st.caption("월별 채널/제품 분석 + 매출/출고량/마진 통합 대시보드")
+st.title("📊 Lingtea Dashboard v4")
+st.caption("월별 채널/제품 분석 + 매출/출고량/공헌이익 통합 대시보드")
 
 SHEET_ID = "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
 
@@ -336,7 +336,7 @@ top_channel = (
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("총 매출", f"{total_sales:,.0f} 원")
 c2.metric("총 출고량", f"{total_qty:,.0f}")
-c3.metric("총 마진", f"{total_margin:,.0f} 원")
+c3.metric("총 마진(매출액 - 원가 - 채널별 수수료)", f"{total_margin:,.0f} 원")
 c4.metric("마진율", f"{margin_rate:.2f}%")
 c5.metric("Top 채널", top_channel, delta=f"{sales_mom:.2f}% MoM")
 
@@ -529,11 +529,10 @@ with tab1:
             "출고량",
             "매출액",
             "원가",
-            "마진",
             "수수료액",
-            "마진율",
+            "마진",
             "수수료율(실적)",
-            "공헌이익률",
+            "마진율",
         ]
     ]
 
@@ -548,7 +547,7 @@ with tab1:
             "광고비": "{:,.0f}",
             "공헌이익": "{:,.0f}",
             "마진율": "{:.2%}",
-            "수수료율(실적)": "{:.2%}",
+            "수수료율(실적)": "{:.0%}",
             "공헌이익률": "{:.2%}"
         }),
         use_container_width=True
@@ -560,6 +559,10 @@ with tab1:
 
 with tab2:
     st.subheader("📦 제품 분석")
+
+    # 🔥 반드시 맨 위에서 초기화
+    if "ad_cost_map" not in st.session_state:
+        st.session_state["ad_cost_map"] = {}
 
     product_summary = (
         filtered_df.groupby("내품상품명", as_index=False)[[
@@ -637,16 +640,30 @@ with tab2:
 
     st.subheader("📋 제품 광고비 입력")
 
-    # 제품명만 추출 (중복 제거)
-    product_view = top_products[["내품상품명"]].drop_duplicates().copy()
-    
+    # 광고비 상태 저장
+    if "ad_cost_map" not in st.session_state:
+        st.session_state["ad_cost_map"] = {}
+
+    # 전체 상품 기준 제품 리스트 생성
+    product_view = filtered_df[["내품상품명"]].drop_duplicates().copy()
     product_view = product_view.rename(columns={
         "내품상품명": "제품명"
     })
-    
-    # 광고비 컬럼 생성
-    product_view["광고비"] = 0
-    
+    product_view = product_view.sort_values("제품명").reset_index(drop=True)
+
+    # 제품 검색
+    product_search = st.text_input("🔍 광고비 입력 제품 검색", placeholder="제품명을 입력하세요")
+
+    if product_search:
+        product_view = product_view[
+            product_view["제품명"].str.contains(product_search, case=False, na=False)
+        ].copy()
+
+    # 기존 입력값 불러오기
+    product_view["광고비"] = product_view["제품명"].map(
+        st.session_state["ad_cost_map"]
+    ).fillna(0)
+
     # 광고비 입력 테이블
     edited_product = st.data_editor(
         product_view,
@@ -655,29 +672,29 @@ with tab2:
             "광고비": st.column_config.NumberColumn(
                 "광고비",
                 step=10000,
-                format="%,d"
-            ),
+                format="%d"
+            )
         },
-        disabled=["제품명"]
+        disabled=["제품명"],
+        hide_index=True
     )
+
+    # 광고비 저장
+    for _, row in edited_product.iterrows():
+        st.session_state["ad_cost_map"][row["제품명"]] = row["광고비"]
+
     # -----------------------------------
     # 광고비를 filtered_df에 반영 (수정)
     # -----------------------------------
     
     ad_map = edited_product[["제품명", "광고비"]].copy()
     ad_map["광고비"] = ad_map["광고비"].fillna(0)
-    
-    filtered_df = filtered_df.drop(columns=["광고비"], errors="ignore")
-    
-    filtered_df = filtered_df.merge(
-        ad_map,
-        left_on="내품상품명",
-        right_on="제품명",
-        how="left"
-    )
-    
-    filtered_df["광고비"] = filtered_df["광고비"].fillna(0)
-    filtered_df = filtered_df.drop(columns=["제품명"], errors="ignore")
+
+    # 컬럼명 변경
+    ad_map = ad_map.rename(columns={
+        "제품명": "내품상품명",
+        "광고비": "제품광고비"
+    })
     
     st.subheader("📊 공헌이익 반영")
 
@@ -687,14 +704,36 @@ with tab2:
     
     final_product = (
         filtered_df.groupby("내품상품명", as_index=False)[
-            ["총내품출고수량", "품목별매출(VAT제외)", "마진", "물류비", "광고비", "공헌이익"]
+            ["총내품출고수량", "품목별매출(VAT제외)", "원가총액","마진", "채널수수료","물류비"]
         ]
         .sum()
     )
+    # 제품별 채널 수수료(평균)
+    final_product["수수료율(평균)"] = safe_divide(
+        final_product["채널수수료"],
+        final_product["품목별매출(VAT제외)"]
+    )
+
+    # 광고비 merge (SKU 단위)
+    final_product = final_product.merge(
+        ad_map,
+        on="내품상품명",
+        how="left"
+    )
+
+    final_product["광고비"] = final_product["제품광고비"].fillna(0)
+    final_product = final_product.drop(columns=["제품광고비"])
+
     
     final_product["마진율"] = safe_divide(
         final_product["마진"],
         final_product["품목별매출(VAT제외)"]
+    )
+
+    final_product["공헌이익"] = (
+        final_product["마진"]
+        - final_product["물류비"]
+        - final_product["광고비"]
     )
     
     final_product["공헌이익률"] = safe_divide(
@@ -705,40 +744,46 @@ with tab2:
     final_product = final_product.rename(columns={
         "내품상품명": "제품명",
         "총내품출고수량": "출고량",
-        "품목별매출(VAT제외)": "매출액"
+        "품목별매출(VAT제외)": "매출액",
+        "채널수수료": "수수료액"
     })
+
+    final_product = final_product[
+        [
+            "제품명",
+            "출고량",
+            "매출액",
+            "원가총액",
+            "수수료액",
+            "수수료율(평균)",
+            "마진",
+            "마진율",
+            "물류비",
+            "광고비",
+            "공헌이익",
+            "공헌이익률"
+        ]
+    ]
     
     # 숫자 정리
-    for col in ["출고량","매출액","마진","물류비","광고비","공헌이익"]:
+    for col in ["출고량","매출액","원가총액","마진","물류비","광고비"]:
         final_product[col] = final_product[col].round(0).astype(int)
     
     st.dataframe(
         final_product.style.format({
             "출고량": "{:,.0f}",
             "매출액": "{:,.0f}",
-            "마진": "{:,.0f}",
+            "원가총액": "{:,.0f}",
             "물류비": "{:,.0f}",
             "광고비": "{:,.0f}",
-            "공헌이익": "{:,.0f}",
+            "수수료액": "{:,.0f}",
+            "수수료율(평균)": "{:.2%}",
+            "마진": "{:,.0f}",
             "마진율": "{:.2%}",
-            "공헌이익률": "{:.2%}"
+            "공헌이익": "{:,.0f}",
+            "공헌이익률": "{:.2%}",
         }),
         use_container_width=True
-    )
-
-    # -----------------------------------
-    # 공헌이익 재계산 (광고비 반영 후)
-    # -----------------------------------
-    
-    filtered_df["공헌이익"] = (
-        filtered_df["마진"]
-        - filtered_df["물류비"]
-        - filtered_df["광고비"]
-    )
-    
-    filtered_df["공헌이익률"] = safe_divide(
-        filtered_df["공헌이익"],
-        filtered_df["품목별매출(VAT제외)"]
     )
 
 # -----------------------------------
@@ -808,4 +853,4 @@ with tab3:
     st.write("- 월별 제품 출고량")
     st.write("- 월별 제품 매출액")
 
-st.success("🚀 Lingtea Dashboard v3.3 Ready")
+st.success("🚀 Lingtea Dashboard v4 Ready")
