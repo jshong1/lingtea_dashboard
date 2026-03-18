@@ -261,8 +261,8 @@ for m in selected_months:
 
     month_mask = filtered_df["출고년월"] == m
 
-    month_sales = filtered_df.loc[
-        month_mask,
+    month_sales = df.loc[
+        df["출고년월"] == m,
         "품목별매출(VAT제외)"
     ].sum()
 
@@ -271,7 +271,7 @@ for m in selected_months:
 
         ratio = (
             filtered_df.loc[month_mask, "품목별매출(VAT제외)"]
-            / month_sales
+            / df.loc[df["출고년월"] == m, "품목별매출(VAT제외)"].sum()
         )
 
         filtered_df.loc[month_mask, "물류비"] = (
