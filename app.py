@@ -15,11 +15,11 @@ from google.oauth2.service_account import Credentials
 # -----------------------------------
 
 st.set_page_config(
-    page_title="Lingtea Dashboard v4.1",
+    page_title="Lingtea Dashboard v4.2",
     layout="wide"
 )
 
-st.title("📊 Lingtea Dashboard v4.1")
+st.title("📊 Lingtea Dashboard v4.2")
 st.caption("월별 채널/제품 분석 + 매출/출고량/공헌이익 통합 대시보드")
 
 SHEET_ID = "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
@@ -45,6 +45,64 @@ def get_client():
         )
 
     return gspread.authorize(creds)
+
+def load_cost_input(sh):
+
+    ws = sh.worksheet("COST_INPUT")
+    data = ws.get_all_values()
+
+    if len(data) < 3:
+        return {}, {}
+
+    header = data[0]  # 월 헤더 (B~M)
+    months = header[1:]  # 첫 컬럼 제외
+
+    # -----------------------------
+    # 1. 물류비
+    # -----------------------------
+    logistics_row = data[1]
+
+    logistics_dict = {}
+    for i, m in enumerate(months):
+        val = logistics_row[i + 1]
+        if val not in ["", None]:
+            val = str(val).replace(",", "").strip()
+            logistics_dict[m] = float(val) if val != "" else 0
+        else:
+            logistics_dict[m] = 0
+
+    # -----------------------------
+    # 2. 광고비
+    # -----------------------------
+    ad_dict = {}
+
+    for row in data[4:]:  # 상품 영역 시작
+        product = str(row[0]).strip()
+
+        if product == "":
+            continue
+
+        for i, m in enumerate(months):
+            val = row[i + 1]
+
+            try:
+                val_float = float(val)
+            except:
+                val_float = 0
+
+            val = str(val).replace(",", "").strip()
+
+            if val == "" or val.lower() == "nan":
+                val_float = 0
+            else:
+                try:
+                    val_float = float(val)
+                except:
+                    val_float = 0
+
+            ad_dict[(product, m)] = val_float
+
+    return logistics_dict, ad_dict
 
 
 def clean_numeric(series: pd.Series) -> pd.Series:
@@ -193,6 +251,16 @@ def build_dataset():
 
 
 df = build_dataset()
+# -----------------------------------
+# COST INPUT 초기화 (비용 계산 전에 먼저 실행)
+# -----------------------------------
+client = get_client()
+sh = client.open_by_key(SHEET_ID)
+
+if "logistics_table" not in st.session_state:
+    logistics_dict, ad_dict = load_cost_input(sh)
+    st.session_state["logistics_table"] = logistics_dict
+    st.session_state["ad_cost_monthly"] = ad_dict
 
 # -----------------------------------
 # 사이드바 필터
@@ -261,7 +329,6 @@ for m in selected_months:
 
     month_mask = filtered_df["출고년월"] == m
 
-    # 전체 데이터 기준 월 매출
     month_sales = df.loc[
         df["출고년월"] == m,
         "품목별매출(VAT제외)"
@@ -269,16 +336,32 @@ for m in selected_months:
 
     if month_sales > 0:
 
-        # 필터된 데이터의 매출 비중
         ratio = (
             filtered_df.loc[month_mask, "품목별매출(VAT제외)"]
             / month_sales
         )
 
-        # 월별 물류비 배분
         filtered_df.loc[month_mask, "물류비"] = (
-            ratio * st.session_state.get("logistics_table", {}).get(m, 0)
+            ratio * st.session_state["logistics_table"].get(m, 0)
         )
+
+for (product, month), ad_cost in st.session_state["ad_cost_monthly"].items():
+
+    mask = (
+        (filtered_df["내품상품명"] == product) &
+        (filtered_df["출고년월"] == month)
+    )
+
+    month_sales = filtered_df.loc[mask, "품목별매출(VAT제외)"].sum()
+
+    if month_sales > 0:
+
+        ratio = (
+            filtered_df.loc[mask, "품목별매출(VAT제외)"]
+            / month_sales
+        )
+
+        filtered_df.loc[mask, "광고비"] = ratio * ad_cost
 
 if filtered_df.empty:
     st.warning("선택한 조건에 해당하는 데이터가 없습니다.")
@@ -798,68 +881,55 @@ with tab2:
 # -----------------------------------
 with tab3:
     st.subheader("📊 공헌이익 분석")
+    st.caption("※ 물류비 / 광고비는 COST_INPUT 시트에서 수정됩니다")
 
     # -----------------------------
     # 1. 월별 물류비 테이블
     # -----------------------------
-    st.markdown("### 🚚 월별 물류비 입력")
+    st.markdown("### 🚚 월별 물류비")
 
-    if "logistics_table" not in st.session_state:
-        st.session_state["logistics_table"] = {
-            m: 0 for m in all_months
-        }
-
+    # -----------------------------
+    # (선택) 화면 표시용 테이블
+    # -----------------------------
     logistics_df = pd.DataFrame([{
         m: st.session_state["logistics_table"].get(m, 0)
         for m in all_months
     }], index=["월별 물류비"])
 
-    edited_logistics = st.data_editor(
-        logistics_df,
-        key="logistics_table_editor",
-        use_container_width=True
-    )
-
-    for m in all_months:
-        st.session_state["logistics_table"][m] = edited_logistics.iloc[0][m]
+    st.dataframe(logistics_df, use_container_width=True)
 
     # -----------------------------
     # 2. 제품 광고비 (월별 테이블)
     # -----------------------------
-    st.markdown("### 📢 제품 광고비 입력")
+    st.markdown("### 📢 제품 광고비")
 
-    if "ad_cost_monthly" not in st.session_state:
-        st.session_state["ad_cost_monthly"] = {}
+    # 광고비 dict → DataFrame 변환
+    ad_data = []
 
-    product_list = sorted(df["내품상품명"].unique())
+    products = sorted(set([k[0] for k in st.session_state["ad_cost_monthly"].keys()]))
 
-    ad_table = pd.DataFrame({
-        "제품명": product_list
-    })
-
-    for m in all_months:
-        ad_table[m] = ad_table["제품명"].apply(
-            lambda x: st.session_state["ad_cost_monthly"].get((x, m), 0)
-        )
-
-    # 검색 기능
-    search = st.text_input("🔍 제품 검색")
-    if search:
-        ad_table = ad_table[
-            ad_table["제품명"].str.contains(search, case=False)
-        ]
-
-    edited_ad = st.data_editor(
-        ad_table,
-        key="ad_month_editor",
-        use_container_width=True,
-        hide_index=True
-    )
-
-    # 저장
-    for _, row in edited_ad.iterrows():
+    for p in products:
+        row = {"제품명": p}
         for m in all_months:
-            st.session_state["ad_cost_monthly"][(row["제품명"], m)] = row[m]
+            row[m] = st.session_state["ad_cost_monthly"].get((p, m), 0)
+        ad_data.append(row)
+
+    ad_df = pd.DataFrame(ad_data)
+
+    # 보기용 테이블 (수정 불가)
+    st.dataframe(ad_df, use_container_width=True)
+
+    # edited_ad = st.data_editor(
+    #     ad_table,
+    #     key="ad_month_editor",
+    #     use_container_width=True,
+    #     hide_index=True
+    # )
+
+    # # 저장
+    # for _, row in edited_ad.iterrows():
+    #     for m in all_months:
+    #         st.session_state["ad_cost_monthly"][(row["제품명"], m)] = row[m]
 
     # -----------------------------
     # 3. 제품별 공헌이익 (정상 버전)
@@ -1100,4 +1170,4 @@ with tab4:
     st.write("- 월별 제품 출고량")
     st.write("- 월별 제품 매출액")
 
-st.success("🚀 Lingtea Dashboard v4.1 Ready")
+st.success("🚀 Lingtea Dashboard v4.2 Ready")
