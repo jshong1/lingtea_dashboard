@@ -17,11 +17,11 @@ import plotly.express as px
 # -----------------------------------
 
 st.set_page_config(
-    page_title="Lingtea Dashboard v4.3",
+    page_title="Lingtea Dashboard v4.4",
     layout="wide"
 )
 
-st.title("📊 Lingtea Dashboard v4.3")
+st.title("📊 Lingtea Dashboard v4.4")
 st.caption("월별 채널/제품 분석 + 매출/출고량/공헌이익 통합 대시보드")
 
 SHEET_ID = "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
@@ -79,9 +79,9 @@ def load_cost_input(sh):
     ad_dict = {}
 
     for row in data[4:]:  # 상품 영역 시작
-        product = str(row[0]).strip()
+        category = str(row[0]).strip()
 
-        if product == "":
+        if category == "":
             continue
 
         for i, m in enumerate(months):
@@ -102,7 +102,7 @@ def load_cost_input(sh):
                 except:
                     val_float = 0
 
-            ad_dict[(product, m)] = val_float
+            ad_dict[(category, m)] = val_float
 
     return logistics_dict, ad_dict
 
@@ -219,7 +219,7 @@ def build_dataset():
     item_df, cust_df = load_master()
 
     merged = df.merge(
-        item_df[["상품명", "제품원가"]],
+        item_df[["상품명", "제품원가", "품목군"]],
         left_on="내품상품명",
         right_on="상품명",
         how="left"
@@ -292,27 +292,7 @@ selected_items = st.sidebar.multiselect(
     default=all_items
 )
 
-# -----------------------------------
-# 비용 입력 (v3.4 추가 기능)
-# -----------------------------------
-
-# st.sidebar.markdown("---")
-# st.sidebar.header("💸 비용 입력")
-
-# # 월별 물류비 입력
-# st.sidebar.markdown("### 🚚 월별 물류비")
-
 logistics_cost_input = {}
-
-# for m in all_months:
-#     logistics_cost_input[m] = st.sidebar.number_input(
-#         f"{m} 물류비",
-#         min_value=0,
-#         value=0,
-#         step=10000,
-#         key=f"logistics_{m}"
-#     )
-
 
 filtered_df = df[
     (df["출고년월"].isin(selected_months)) &
@@ -347,10 +327,10 @@ for m in selected_months:
             ratio * st.session_state["logistics_table"].get(m, 0)
         )
 
-for (product, month), ad_cost in st.session_state["ad_cost_monthly"].items():
+for (category, month), ad_cost in st.session_state["ad_cost_monthly"].items():
 
     mask = (
-        (filtered_df["내품상품명"] == product) &
+        (filtered_df["품목군"] == category) &
         (filtered_df["출고년월"] == month)
     )
 
@@ -793,10 +773,10 @@ with tab4:
     # -----------------------------
     temp_df["광고비"] = 0
 
-    for (product, month), ad_cost in st.session_state["ad_cost_monthly"].items():
+    for (category, month), ad_cost in st.session_state["ad_cost_monthly"].items():
 
         mask = (
-            (temp_df["내품상품명"] == product) &
+            (temp_df["품목군"] == category) &
             (temp_df["출고년월"] == month)
         )
 
@@ -994,4 +974,4 @@ with tab5:
     st.write("- 월별 제품 출고량")
     st.write("- 월별 제품 매출액")
 
-st.success("🚀 Lingtea Dashboard v4.3 Ready")
+st.success("🚀 Lingtea Dashboard v4.4 Ready")
