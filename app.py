@@ -17,11 +17,11 @@ import plotly.express as px
 # -----------------------------------
 
 st.set_page_config(
-    page_title="Lingtea Dashboard v5.1",
+    page_title="Lingtea Dashboard v5.2",
     layout="wide"
 )
 
-st.title("📊 Lingtea Dashboard v5.1")
+st.title("📊 Lingtea Dashboard v5.2")
 st.caption("월별 채널/제품 분석 + 매출/출고량/공헌이익 통합 대시보드")
 
 SHEET_ID = "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
@@ -112,9 +112,10 @@ def load_channel_cost(sh):
     CHANNEL_COST 시트 로드
     A열: 년월 (예: 2026-01)
     B열: 거래처명
-    C열: 비용항목
-    D열: 금액(VAT-)
-    반환: dict { (년월, 거래처명): 금액합계 }
+    C열: 품목군
+    D열: 비용항목
+    E열: 금액(VAT-)
+    반환: dict { (년월, 거래처명, 품목군): 금액합계 }
     """
     try:
         ws = sh.worksheet("CHANNEL_COST")
@@ -127,13 +128,14 @@ def load_channel_cost(sh):
 
     channel_cost_dict = {}
     for row in data[1:]:
-        if len(row) < 4:
+        if len(row) < 5:
             continue
         year_month = str(row[0]).strip()
-        channel = str(row[1]).strip()
-        amount_str = str(row[3]).replace(",", "").strip()
+        channel    = str(row[1]).strip()
+        item_group = str(row[2]).strip()
+        amount_str = str(row[4]).replace(",", "").strip()
 
-        if year_month == "" or channel == "":
+        if year_month == "" or channel == "" or item_group == "":
             continue
 
         try:
@@ -141,7 +143,7 @@ def load_channel_cost(sh):
         except:
             amount = 0
 
-        key = (year_month, channel)
+        key = (year_month, channel, item_group)
         channel_cost_dict[key] = channel_cost_dict.get(key, 0) + amount
 
     return channel_cost_dict
@@ -814,7 +816,7 @@ with tab4:
         for m in all_months
     }], index=["월별 물류비"])
 
-    st.dataframe(logistics_df, use_container_width=True)
+    st.dataframe(logistics_df.style.format("{:,.0f}"), use_container_width=True)
 
     # -----------------------------
     # 2. 제품 광고비 (월별 테이블)
@@ -835,18 +837,20 @@ with tab4:
     ad_df = pd.DataFrame(ad_data)
 
     # 보기용 테이블 (수정 불가)
-    st.dataframe(ad_df, use_container_width=True)
+    month_cols = [c for c in ad_df.columns if c != "제품명"]
+    fmt = {m: "{:,.0f}" for m in month_cols}
+    st.dataframe(ad_df.style.format(fmt), use_container_width=True)
 
     # -----------------------------
     # 3-1. 채널별 후정산 비용 현황
     # -----------------------------
-    st.markdown("### 💸 채널별 후정산 비용 (CHANNEL_COST)")
+    st.markdown("### 💸 채널별 후정산 비용")
 
     if st.session_state["channel_cost"]:
         cc_rows = []
-        for (ym, ch), amt in st.session_state["channel_cost"].items():
-            cc_rows.append({"년월": ym, "거래처명": ch, "비용(VAT-)": amt})
-        cc_df = pd.DataFrame(cc_rows).sort_values(["년월", "거래처명"])
+        for (ym, ch, ig), amt in st.session_state["channel_cost"].items():
+            cc_rows.append({"년월": ym, "거래처명": ch, "품목군": ig, "비용(VAT-)": amt})
+        cc_df = pd.DataFrame(cc_rows).sort_values(["년월", "거래처명", "품목군"])
         st.dataframe(
             cc_df.style.format({"비용(VAT-)": "{:,.0f}"}),
             use_container_width=True
@@ -899,10 +903,8 @@ with tab4:
 
             temp_df.loc[mask, "광고비"] = ratio * ad_cost
 
-    # 👉 제품 기준으로 광고비 합산되도록만 둠 (분배 안함)
-
     # -----------------------------
-    # 3. 공헌이익 계산
+    # 3. 공헌이익 계산 (비용 제외 중간값)
     # -----------------------------
     temp_df["공헌이익"] = (
         temp_df["마진"]
@@ -938,36 +940,20 @@ with tab4:
     )
 
     # -----------------------------
-    # 채널별 후정산 비용 → 품목군별 역산 안분
-    # 로직: 채널(거래처) 비용을 해당 채널에서 판매된 품목군 매출 비중으로 안분
+    # 채널별×품목군별 후정산 비용 → 품목군별 직접 매핑
+    # CHANNEL_COST 키: (년월, 거래처명, 품목군) → 해당 품목군에 바로 합산
     # -----------------------------
     product_contrib["비용"] = 0.0
 
-    for (year_month, channel_name), cost_amount in st.session_state["channel_cost"].items():
+    for (year_month, channel_name, item_group), cost_amount in st.session_state["channel_cost"].items():
         if year_month not in selected_months:
             continue
-
-        # 해당 채널 × 해당 월의 품목군별 매출 집계
-        ch_mask = (
-            (temp_df["거래처분류"] == channel_name) &
-            (temp_df["출고년월"] == year_month)
-        )
-        ch_group_sales = (
-            temp_df.loc[ch_mask]
-            .groupby("품목군")["품목별매출(VAT제외)"]
-            .sum()
-        )
-        ch_total_sales = ch_group_sales.sum()
-
-        if ch_total_sales <= 0:
+        # 선택된 채널 필터 적용
+        if channel_name not in selected_channel_groups:
             continue
-
-        for item_group, group_sales in ch_group_sales.items():
-            ratio = group_sales / ch_total_sales
-            allocated = cost_amount * ratio
-            row_mask = product_contrib["품목군"] == item_group
-            if row_mask.any():
-                product_contrib.loc[row_mask, "비용"] += allocated
+        row_mask = product_contrib["품목군"] == item_group
+        if row_mask.any():
+            product_contrib.loc[row_mask, "비용"] += cost_amount
 
     # 최종 공헌이익 = 마진 - 물류비 - 광고비 - 비용
     product_contrib["공헌이익"] = (
@@ -1022,10 +1008,10 @@ with tab4:
         ]].sum()
     )
 
-    # CHANNEL_COST 후정산 비용 반영
+    # CHANNEL_COST 후정산 비용 반영 (년월, 거래처명, 품목군) 기준 합산
     channel_contrib["비용"] = 0.0
 
-    for (year_month, channel_name), cost_amount in st.session_state["channel_cost"].items():
+    for (year_month, channel_name, item_group), cost_amount in st.session_state["channel_cost"].items():
         if year_month not in selected_months:
             continue
         row_mask = channel_contrib["거래처분류"] == channel_name
@@ -1139,4 +1125,4 @@ with tab5:
     st.write("- 월별 제품 출고량")
     st.write("- 월별 제품 매출액")
 
-st.success("🚀 Lingtea Dashboard v5.1 Ready")
+st.success("🚀 Lingtea Dashboard v5.2 Ready")
