@@ -17,11 +17,11 @@ import plotly.express as px
 # -----------------------------------
 
 st.set_page_config(
-    page_title="Lingtea Dashboard v4.4",
+    page_title="Lingtea Dashboard v4.5",
     layout="wide"
 )
 
-st.title("📊 Lingtea Dashboard v4.4")
+st.title("📊 Lingtea Dashboard v4.5")
 st.caption("월별 채널/제품 분석 + 매출/출고량/공헌이익 통합 대시보드")
 
 SHEET_ID = "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
@@ -743,9 +743,9 @@ with tab4:
     st.dataframe(ad_df, use_container_width=True)
 
     # -----------------------------
-    # 3. 제품별 공헌이익 (정상 버전)
+    # 3. 품목군별 공헌이익 (정상 버전)
     # -----------------------------
-    st.markdown("### 📦 제품별 공헌이익")
+    st.markdown("### 📦 품목군별 공헌이익")
 
     temp_df = df.copy()  # 🔥 핵심: filtered_df ❌ → df ✅
 
@@ -818,7 +818,7 @@ with tab4:
 
 
     product_contrib = (
-        temp_df.groupby("내품상품명", as_index=False)[[
+        temp_df.groupby("품목군", as_index=False)[[
             "총내품출고수량",
             "품목별매출(VAT제외)",
             "원가총액",
@@ -974,4 +974,4 @@ with tab5:
     st.write("- 월별 제품 출고량")
     st.write("- 월별 제품 매출액")
 
-st.success("🚀 Lingtea Dashboard v4.4 Ready")
+st.success("🚀 Lingtea Dashboard v4.5 Ready")
