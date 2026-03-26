@@ -17,11 +17,11 @@ import plotly.express as px
 # -----------------------------------
 
 st.set_page_config(
-    page_title="Lingtea Dashboard v5.0",
+    page_title="Lingtea Dashboard v5.1",
     layout="wide"
 )
 
-st.title("📊 Lingtea Dashboard v5.0")
+st.title("📊 Lingtea Dashboard v5.1")
 st.caption("월별 채널/제품 분석 + 매출/출고량/공헌이익 통합 대시보드")
 
 SHEET_ID = "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
@@ -212,6 +212,39 @@ def load_view_table():
     return df
 
 
+@st.cache_data(ttl=600)
+def load_cost_master():
+    """
+    COST_MASTER 시트 로드
+    A열: 년월 (예: 2025-12)
+    B열: 상품코드
+    C열: 상품명
+    D열: 제품원가
+    반환: dict { (년월, 상품명): 제품원가 }
+    공헌이익 원가 시차 규칙: 출고년월 N월 → 전월(N-1월) 원가 사용
+    """
+    client = get_client()
+    ws = client.open_by_key(SHEET_ID).worksheet("COST_MASTER")
+    data = ws.get_all_values()
+
+    cost_dict = {}
+    for row in data[1:]:
+        if len(row) < 4:
+            continue
+        year_month = str(row[0]).strip()
+        item_name  = str(row[2]).strip()
+        cost_str   = str(row[3]).replace(",", "").strip()
+        if year_month == "" or item_name == "":
+            continue
+        try:
+            cost = float(cost_str)
+        except:
+            cost = 0
+        cost_dict[(year_month, item_name)] = cost
+
+    return cost_dict
+
+
 # -----------------------------------
 # MASTER 로드
 # -----------------------------------
@@ -220,15 +253,10 @@ def load_view_table():
 def load_master():
     client = get_client()
 
-    # ITEM_MASTER
+    # ITEM_MASTER (품목군 분류만 사용, 원가는 COST_MASTER에서 가져옴)
     item_ws = client.open_by_key(SHEET_ID).worksheet("ITEM_MASTER")
     item_data = item_ws.get_all_values()
     item_df = pd.DataFrame(item_data[1:], columns=item_data[0]).copy()
-
-    if "제품원가" not in item_df.columns:
-        item_df["제품원가"] = 0
-
-    item_df["제품원가"] = clean_numeric(item_df["제품원가"]).fillna(0)
 
     # CUSTOMER_MASTER
     cust_ws = client.open_by_key(SHEET_ID).worksheet("CUSTOMER_MASTER")
@@ -265,9 +293,11 @@ def load_master():
 def build_dataset():
     df = load_view_table()
     item_df, cust_df = load_master()
+    cost_dict = load_cost_master()
 
+    # 품목군만 조인 (원가는 COST_MASTER에서 별도 매칭)
     merged = df.merge(
-        item_df[["상품명", "제품원가", "품목군"]],
+        item_df[["상품명", "품목군"]],
         left_on="내품상품명",
         right_on="상품명",
         how="left"
@@ -281,13 +311,27 @@ def build_dataset():
         how="left"
     )
 
-    merged["제품원가"] = merged["제품원가"].fillna(0)
     merged["수수료율"] = merged["수수료율"].fillna(0)
     merged["국내여부"] = merged["국내여부"].fillna("국내")
 
     # 거래처분류 없는 경우 거래처코드로 대체
     merged["거래처분류"] = merged["거래처분류"].replace("", np.nan)
     merged["거래처분류"] = merged["거래처분류"].fillna(merged["거래처코드"])
+
+    # -----------------------------
+    # 원가 시차 반영: 출고년월 N월 → 전월(N-1월) COST_MASTER 원가 사용
+    # 예) 2026-01 출고 → 2025-12 원가 적용
+    # -----------------------------
+    def get_prev_month_cost(row):
+        try:
+            ship_dt = pd.to_datetime(row["출고년월"] + "-01")
+            prev_dt = ship_dt - relativedelta(months=1)
+            prev_ym = prev_dt.strftime("%Y-%m")
+        except:
+            return 0
+        return cost_dict.get((prev_ym, row["내품상품명"]), 0)
+
+    merged["제품원가"] = merged.apply(get_prev_month_cost, axis=1)
 
     merged["원가총액"] = merged["총내품출고수량"] * merged["제품원가"]
     merged["채널수수료"] = merged["품목별매출(VAT제외)"] * merged["수수료율"]
@@ -1095,4 +1139,4 @@ with tab5:
     st.write("- 월별 제품 출고량")
     st.write("- 월별 제품 매출액")
 
-st.success("🚀 Lingtea Dashboard v5.0 Ready")
+st.success("🚀 Lingtea Dashboard v5.1 Ready")
