@@ -17,11 +17,11 @@ import plotly.express as px
 # -----------------------------------
 
 st.set_page_config(
-    page_title="Lingtea Dashboard v4.5",
+    page_title="Lingtea Dashboard v5.0",
     layout="wide"
 )
 
-st.title("📊 Lingtea Dashboard v4.5")
+st.title("📊 Lingtea Dashboard v5.0")
 st.caption("월별 채널/제품 분석 + 매출/출고량/공헌이익 통합 대시보드")
 
 SHEET_ID = "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
@@ -105,6 +105,46 @@ def load_cost_input(sh):
             ad_dict[(category, m)] = val_float
 
     return logistics_dict, ad_dict
+
+
+def load_channel_cost(sh):
+    """
+    CHANNEL_COST 시트 로드
+    A열: 년월 (예: 2026-01)
+    B열: 거래처명
+    C열: 비용항목
+    D열: 금액(VAT-)
+    반환: dict { (년월, 거래처명): 금액합계 }
+    """
+    try:
+        ws = sh.worksheet("CHANNEL_COST")
+        data = ws.get_all_values()
+    except Exception:
+        return {}
+
+    if len(data) < 2:
+        return {}
+
+    channel_cost_dict = {}
+    for row in data[1:]:
+        if len(row) < 4:
+            continue
+        year_month = str(row[0]).strip()
+        channel = str(row[1]).strip()
+        amount_str = str(row[3]).replace(",", "").strip()
+
+        if year_month == "" or channel == "":
+            continue
+
+        try:
+            amount = float(amount_str)
+        except:
+            amount = 0
+
+        key = (year_month, channel)
+        channel_cost_dict[key] = channel_cost_dict.get(key, 0) + amount
+
+    return channel_cost_dict
 
 
 def clean_numeric(series: pd.Series) -> pd.Series:
@@ -201,6 +241,14 @@ def load_master():
     if "수수료율" not in cust_df.columns:
         cust_df["수수료율"] = 0
 
+    # D열: 국내/해외 구분 컬럼 (4번째 컬럼)
+    col_list = cust_df.columns.tolist()
+    if len(col_list) >= 4:
+        domestic_col = col_list[3]  # D열 (0-indexed: 3)
+        cust_df["국내여부"] = cust_df[domestic_col].astype(str).str.strip()
+    else:
+        cust_df["국내여부"] = "국내"  # 컬럼 없으면 기본값 국내
+
     cust_df["수수료율"] = clean_numeric(cust_df["수수료율"]).fillna(0)
     cust_df["수수료율"] = np.where(cust_df["수수료율"] > 1, cust_df["수수료율"] / 100, cust_df["수수료율"])
     cust_df["거래처명"] = cust_df["거래처명"].astype(str).str.strip()
@@ -228,13 +276,14 @@ def build_dataset():
     merged["거래처분류"] = merged["거래처코드"]
 
     merged = merged.merge(
-        cust_df[["거래처분류", "수수료율"]].drop_duplicates(),
+        cust_df[["거래처분류", "수수료율", "국내여부"]].drop_duplicates(),
         on="거래처분류",
         how="left"
     )
 
     merged["제품원가"] = merged["제품원가"].fillna(0)
     merged["수수료율"] = merged["수수료율"].fillna(0)
+    merged["국내여부"] = merged["국내여부"].fillna("국내")
 
     # 거래처분류 없는 경우 거래처코드로 대체
     merged["거래처분류"] = merged["거래처분류"].replace("", np.nan)
@@ -263,6 +312,9 @@ if "logistics_table" not in st.session_state:
     logistics_dict, ad_dict = load_cost_input(sh)
     st.session_state["logistics_table"] = logistics_dict
     st.session_state["ad_cost_monthly"] = ad_dict
+
+if "channel_cost" not in st.session_state:
+    st.session_state["channel_cost"] = load_channel_cost(sh)
 
 # -----------------------------------
 # 사이드바 필터
@@ -311,19 +363,18 @@ for m in selected_months:
 
     month_mask = filtered_df["출고년월"] == m
 
-    month_sales = df.loc[
-        df["출고년월"] == m,
-        "품목별매출(VAT제외)"
-    ].sum()
+    # 국내 거래처의 전체 매출합 기준으로 안분
+    domestic_mask_all = (df["출고년월"] == m) & (df["국내여부"] == "국내")
+    month_domestic_sales = df.loc[domestic_mask_all, "품목별매출(VAT제외)"].sum()
 
-    if month_sales > 0:
-
+    if month_domestic_sales > 0:
+        # filtered_df 중 국내인 행만 물류비 배분
+        domestic_month_mask = month_mask & (filtered_df["국내여부"] == "국내")
         ratio = (
-            filtered_df.loc[month_mask, "품목별매출(VAT제외)"]
-            / month_sales
+            filtered_df.loc[domestic_month_mask, "품목별매출(VAT제외)"]
+            / month_domestic_sales
         )
-
-        filtered_df.loc[month_mask, "물류비"] = (
+        filtered_df.loc[domestic_month_mask, "물류비"] = (
             ratio * st.session_state["logistics_table"].get(m, 0)
         )
 
@@ -743,8 +794,21 @@ with tab4:
     st.dataframe(ad_df, use_container_width=True)
 
     # -----------------------------
-    # 3. 품목군별 공헌이익 (정상 버전)
+    # 3-1. 채널별 후정산 비용 현황
     # -----------------------------
+    st.markdown("### 💸 채널별 후정산 비용 (CHANNEL_COST)")
+
+    if st.session_state["channel_cost"]:
+        cc_rows = []
+        for (ym, ch), amt in st.session_state["channel_cost"].items():
+            cc_rows.append({"년월": ym, "거래처명": ch, "비용(VAT-)": amt})
+        cc_df = pd.DataFrame(cc_rows).sort_values(["년월", "거래처명"])
+        st.dataframe(
+            cc_df.style.format({"비용(VAT-)": "{:,.0f}"}),
+            use_container_width=True
+        )
+    else:
+        st.info("CHANNEL_COST 시트에 데이터가 없습니다.")
     st.markdown("### 📦 품목군별 공헌이익")
 
     temp_df = df.copy()  # 🔥 핵심: filtered_df ❌ → df ✅
@@ -758,13 +822,13 @@ with tab4:
 
         mask = temp_df["출고년월"] == m
 
-        month_total = temp_df.loc[mask, "품목별매출(VAT제외)"].sum()
+        # 국내 거래처 매출합 기준 안분
+        domestic_mask = mask & (temp_df["국내여부"] == "국내")
+        month_domestic_total = temp_df.loc[domestic_mask, "품목별매출(VAT제외)"].sum()
 
-        if month_total > 0:
-
-            ratio = temp_df.loc[mask, "품목별매출(VAT제외)"] / month_total
-
-            temp_df.loc[mask, "물류비"] = (
+        if month_domestic_total > 0:
+            ratio = temp_df.loc[domestic_mask, "품목별매출(VAT제외)"] / month_domestic_total
+            temp_df.loc[domestic_mask, "물류비"] = (
                 ratio * st.session_state["logistics_table"].get(m, 0)
             )
 
@@ -826,9 +890,47 @@ with tab4:
             "마진",
             "물류비",
             "광고비",
-            "공헌이익",
-            "공헌이익률"
         ]].sum()
+    )
+
+    # -----------------------------
+    # 채널별 후정산 비용 → 품목군별 역산 안분
+    # 로직: 채널(거래처) 비용을 해당 채널에서 판매된 품목군 매출 비중으로 안분
+    # -----------------------------
+    product_contrib["비용"] = 0.0
+
+    for (year_month, channel_name), cost_amount in st.session_state["channel_cost"].items():
+        if year_month not in selected_months:
+            continue
+
+        # 해당 채널 × 해당 월의 품목군별 매출 집계
+        ch_mask = (
+            (temp_df["거래처분류"] == channel_name) &
+            (temp_df["출고년월"] == year_month)
+        )
+        ch_group_sales = (
+            temp_df.loc[ch_mask]
+            .groupby("품목군")["품목별매출(VAT제외)"]
+            .sum()
+        )
+        ch_total_sales = ch_group_sales.sum()
+
+        if ch_total_sales <= 0:
+            continue
+
+        for item_group, group_sales in ch_group_sales.items():
+            ratio = group_sales / ch_total_sales
+            allocated = cost_amount * ratio
+            row_mask = product_contrib["품목군"] == item_group
+            if row_mask.any():
+                product_contrib.loc[row_mask, "비용"] += allocated
+
+    # 최종 공헌이익 = 마진 - 물류비 - 광고비 - 비용
+    product_contrib["공헌이익"] = (
+        product_contrib["마진"]
+        - product_contrib["물류비"]
+        - product_contrib["광고비"]
+        - product_contrib["비용"]
     )
 
     product_contrib["마진율"] = safe_divide(
@@ -846,10 +948,10 @@ with tab4:
             "총내품출고수량": "{:,.0f}",
             "품목별매출(VAT제외)": "{:,.0f}",
             "원가총액": "{:,.0f}",
+            "채널수수료": "{:,.0f}",
             "물류비": "{:,.0f}",
             "광고비": "{:,.0f}",
-            "채널수수료": "{:,.0f}",
-            "수수료율(평균)": "{:.2%}",
+            "비용": "{:,.0f}",
             "마진": "{:,.0f}",
             "마진율": "{:.2%}",
             "공헌이익": "{:,.0f}",
@@ -876,6 +978,24 @@ with tab4:
         ]].sum()
     )
 
+    # CHANNEL_COST 후정산 비용 반영
+    channel_contrib["비용"] = 0.0
+
+    for (year_month, channel_name), cost_amount in st.session_state["channel_cost"].items():
+        if year_month not in selected_months:
+            continue
+        row_mask = channel_contrib["거래처분류"] == channel_name
+        if row_mask.any():
+            channel_contrib.loc[row_mask, "비용"] += cost_amount
+
+    # 최종 공헌이익 = 마진 - 물류비 - 광고비 - 비용
+    channel_contrib["공헌이익"] = (
+        channel_contrib["마진"]
+        - channel_contrib["물류비"]
+        - channel_contrib["광고비"]
+        - channel_contrib["비용"]
+    )
+
     channel_contrib["수수료율"] = safe_divide(
         channel_contrib["채널수수료"],
         channel_contrib["품목별매출(VAT제외)"]
@@ -898,6 +1018,7 @@ with tab4:
             "원가총액": "{:,.0f}",
             "물류비": "{:,.0f}",
             "광고비": "{:,.0f}",
+            "비용": "{:,.0f}",
             "채널수수료": "{:,.0f}",
             "수수료율": "{:.2%}",
             "마진": "{:,.0f}",
@@ -974,4 +1095,4 @@ with tab5:
     st.write("- 월별 제품 출고량")
     st.write("- 월별 제품 매출액")
 
-st.success("🚀 Lingtea Dashboard v4.5 Ready")
+st.success("🚀 Lingtea Dashboard v5.0 Ready")
