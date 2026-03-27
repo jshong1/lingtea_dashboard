@@ -17,11 +17,11 @@ import plotly.express as px
 # -----------------------------------
 
 st.set_page_config(
-    page_title="Lingtea Dashboard v5.2",
+    page_title="Lingtea Dashboard v5.2.1",
     layout="wide"
 )
 
-st.title("📊 Lingtea Dashboard v5.2")
+st.title("📊 Lingtea Dashboard v5.2.1")
 st.caption("월별 채널/제품 분석 + 매출/출고량/공헌이익 통합 대시보드")
 
 SHEET_ID = "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
@@ -808,9 +808,6 @@ with tab4:
     # -----------------------------
     st.markdown("### 🚚 월별 물류비")
 
-    # -----------------------------
-    # (선택) 화면 표시용 테이블
-    # -----------------------------
     logistics_df = pd.DataFrame([{
         m: st.session_state["logistics_table"].get(m, 0)
         for m in all_months
@@ -823,9 +820,7 @@ with tab4:
     # -----------------------------
     st.markdown("### 📢 제품 광고비")
 
-    # 광고비 dict → DataFrame 변환
     ad_data = []
-
     products = sorted(set([k[0] for k in st.session_state["ad_cost_monthly"].keys()]))
 
     for p in products:
@@ -836,7 +831,6 @@ with tab4:
 
     ad_df = pd.DataFrame(ad_data)
 
-    # 보기용 테이블 (수정 불가)
     month_cols = [c for c in ad_df.columns if c != "제품명"]
     fmt = {m: "{:,.0f}" for m in month_cols}
     st.dataframe(ad_df.style.format(fmt), use_container_width=True)
@@ -857,20 +851,19 @@ with tab4:
         )
     else:
         st.info("CHANNEL_COST 시트에 데이터가 없습니다.")
+
+    # -----------------------------
+    # 3. 품목군별 공헌이익
+    # -----------------------------
     st.markdown("### 📦 품목군별 공헌이익")
 
-    temp_df = df.copy()  # 🔥 핵심: filtered_df ❌ → df ✅
+    temp_df = df.copy()
 
-    # -----------------------------
-    # 1. 물류비 (전체 기준 배분)
-    # -----------------------------
+    # 1. 물류비
     temp_df["물류비"] = 0
 
     for m in all_months:
-
         mask = temp_df["출고년월"] == m
-
-        # 국내 거래처 매출합 기준 안분
         domestic_mask = mask & (temp_df["국내여부"] == "국내")
         month_domestic_total = temp_df.loc[domestic_mask, "품목별매출(VAT제외)"].sum()
 
@@ -880,32 +873,20 @@ with tab4:
                 ratio * st.session_state["logistics_table"].get(m, 0)
             )
 
-    # -----------------------------
-    # 2. 광고비 (그대로 매핑, 분배 X)
-    # -----------------------------
+    # 2. 광고비
     temp_df["광고비"] = 0
 
     for (category, month), ad_cost in st.session_state["ad_cost_monthly"].items():
-
         mask = (
             (temp_df["품목군"] == category) &
             (temp_df["출고년월"] == month)
         )
-
         month_sales = temp_df.loc[mask, "품목별매출(VAT제외)"].sum()
-
         if month_sales > 0:
-
-            ratio = (
-                temp_df.loc[mask, "품목별매출(VAT제외)"]
-                / month_sales
-            )
-
+            ratio = temp_df.loc[mask, "품목별매출(VAT제외)"] / month_sales
             temp_df.loc[mask, "광고비"] = ratio * ad_cost
 
-    # -----------------------------
-    # 3. 공헌이익 계산 (비용 제외 중간값)
-    # -----------------------------
+    # 3. 공헌이익 계산
     temp_df["공헌이익"] = (
         temp_df["마진"]
         - temp_df["물류비"]
@@ -917,15 +898,12 @@ with tab4:
         temp_df["품목별매출(VAT제외)"]
     )
 
-    # -----------------------------
-    # 🔥 필터는 여기서 적용
-    # -----------------------------
+    # 필터 적용
     temp_df = temp_df[
         (temp_df["출고년월"].isin(selected_months)) &
         (temp_df["거래처분류"].isin(selected_channel_groups)) &
         (temp_df["내품상품명"].isin(selected_items))
     ].copy()
-
 
     product_contrib = (
         temp_df.groupby("품목군", as_index=False)[[
@@ -939,23 +917,19 @@ with tab4:
         ]].sum()
     )
 
-    # -----------------------------
-    # 채널별×품목군별 후정산 비용 → 품목군별 직접 매핑
-    # CHANNEL_COST 키: (년월, 거래처명, 품목군) → 해당 품목군에 바로 합산
-    # -----------------------------
+    # CHANNEL_COST → 품목군별 직접 매핑
     product_contrib["비용"] = 0.0
 
     for (year_month, channel_name, item_group), cost_amount in st.session_state["channel_cost"].items():
         if year_month not in selected_months:
             continue
-        # 선택된 채널 필터 적용
         if channel_name not in selected_channel_groups:
             continue
         row_mask = product_contrib["품목군"] == item_group
         if row_mask.any():
             product_contrib.loc[row_mask, "비용"] += cost_amount
 
-    # 최종 공헌이익 = 마진 - 물류비 - 광고비 - 비용
+    # 최종 공헌이익
     product_contrib["공헌이익"] = (
         product_contrib["마진"]
         - product_contrib["물류비"]
@@ -991,73 +965,74 @@ with tab4:
     )
 
     # -----------------------------
-    # 4. 채널별 공헌이익
+    # 4. 채널별 공헌이익 (토글)
     # -----------------------------
-    st.markdown("### 🏪 채널별 공헌이익")
+    with st.expander("🏪 채널별 공헌이익", expanded=False):
 
-    channel_contrib = (
-        temp_df.groupby("거래처분류", as_index=False)[[
-            "총내품출고수량",
-            "품목별매출(VAT제외)",
-            "원가총액",
-            "채널수수료",
-            "마진",
-            "물류비",
-            "광고비",
-            "공헌이익"
-        ]].sum()
-    )
+        channel_contrib = (
+            temp_df.groupby("거래처분류", as_index=False)[[
+                "총내품출고수량",
+                "품목별매출(VAT제외)",
+                "원가총액",
+                "채널수수료",
+                "마진",
+                "물류비",
+                "광고비",
+                "공헌이익"
+            ]].sum()
+        )
 
-    # CHANNEL_COST 후정산 비용 반영 (년월, 거래처명, 품목군) 기준 합산
-    channel_contrib["비용"] = 0.0
+        # CHANNEL_COST 후정산 비용 반영
+        channel_contrib["비용"] = 0.0
 
-    for (year_month, channel_name, item_group), cost_amount in st.session_state["channel_cost"].items():
-        if year_month not in selected_months:
-            continue
-        row_mask = channel_contrib["거래처분류"] == channel_name
-        if row_mask.any():
-            channel_contrib.loc[row_mask, "비용"] += cost_amount
+        for (year_month, channel_name, item_group), cost_amount in st.session_state["channel_cost"].items():
+            if year_month not in selected_months:
+                continue
+            row_mask = channel_contrib["거래처분류"] == channel_name
+            if row_mask.any():
+                channel_contrib.loc[row_mask, "비용"] += cost_amount
 
-    # 최종 공헌이익 = 마진 - 물류비 - 광고비 - 비용
-    channel_contrib["공헌이익"] = (
-        channel_contrib["마진"]
-        - channel_contrib["물류비"]
-        - channel_contrib["광고비"]
-        - channel_contrib["비용"]
-    )
+        # 최종 공헌이익 = 마진 - 물류비 - 광고비 - 비용
+        channel_contrib["공헌이익"] = (
+            channel_contrib["마진"]
+            - channel_contrib["물류비"]
+            - channel_contrib["광고비"]
+            - channel_contrib["비용"]
+        )
 
-    channel_contrib["수수료율"] = safe_divide(
-        channel_contrib["채널수수료"],
-        channel_contrib["품목별매출(VAT제외)"]
-    )
+        channel_contrib["수수료율"] = safe_divide(
+            channel_contrib["채널수수료"],
+            channel_contrib["품목별매출(VAT제외)"]
+        )
 
-    channel_contrib["마진율"] = safe_divide(
-        channel_contrib["마진"],
-        channel_contrib["품목별매출(VAT제외)"]
-    )
+        channel_contrib["마진율"] = safe_divide(
+            channel_contrib["마진"],
+            channel_contrib["품목별매출(VAT제외)"]
+        )
 
-    channel_contrib["공헌이익률"] = safe_divide(
-        channel_contrib["공헌이익"],
-        channel_contrib["품목별매출(VAT제외)"]
-    )
+        channel_contrib["공헌이익률"] = safe_divide(
+            channel_contrib["공헌이익"],
+            channel_contrib["품목별매출(VAT제외)"]
+        )
 
-    st.dataframe(
-        channel_contrib.style.format({
-            "총내품출고수량": "{:,.0f}",
-            "품목별매출(VAT제외)": "{:,.0f}",
-            "원가총액": "{:,.0f}",
-            "물류비": "{:,.0f}",
-            "광고비": "{:,.0f}",
-            "비용": "{:,.0f}",
-            "채널수수료": "{:,.0f}",
-            "수수료율": "{:.2%}",
-            "마진": "{:,.0f}",
-            "마진율": "{:.2%}",
-            "공헌이익": "{:,.0f}",
-            "공헌이익률": "{:.2%}",
-        }),
-        use_container_width=True
-    )
+        st.dataframe(
+            channel_contrib.style.format({
+                "총내품출고수량": "{:,.0f}",
+                "품목별매출(VAT제외)": "{:,.0f}",
+                "원가총액": "{:,.0f}",
+                "물류비": "{:,.0f}",
+                "광고비": "{:,.0f}",
+                "비용": "{:,.0f}",
+                "채널수수료": "{:,.0f}",
+                "수수료율": "{:.2%}",
+                "마진": "{:,.0f}",
+                "마진율": "{:.2%}",
+                "공헌이익": "{:,.0f}",
+                "공헌이익률": "{:.2%}",
+            }),
+            use_container_width=True
+        )
+
 # -----------------------------------
 # 다운로드
 # -----------------------------------
@@ -1115,7 +1090,7 @@ with tab5:
     st.download_button(
         label="📥 분석 결과 통합 엑셀 다운로드",
         data=download_file,
-        file_name="Lingtea_Dashboard_v3.xlsx",
+        file_name="Lingtea_Dashboard_v5.2.1.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
 
@@ -1125,4 +1100,4 @@ with tab5:
     st.write("- 월별 제품 출고량")
     st.write("- 월별 제품 매출액")
 
-st.success("🚀 Lingtea Dashboard v5.2 Ready")
+st.success("🚀 Lingtea Dashboard v5.2.1 Ready")
