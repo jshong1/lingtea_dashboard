@@ -364,6 +364,24 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 with tab1:
     st.subheader("📈 월별 추이")
 
+    # -----------------------------------
+    # 전년(2025) 월별 매출 하드코딩
+    # -----------------------------------
+    PREV_YEAR_SALES = {
+        "2025-01": 1991931168,
+        "2025-02": 2176591336,
+        "2025-03": 3651018838,
+        "2025-04": 3872623112,
+        "2025-05": 4175587255,
+        "2025-06": 5201516827,
+        "2025-07": 7693114287,
+        "2025-08": 7275245463,
+        "2025-09": 4754097322,
+        "2025-10": 3676493223,
+        "2025-11": 2421817295,
+        "2025-12": 3094450532,
+    }
+
     monthly = (
         filtered_df.groupby("출고년월", as_index=False)[
             ["품목별매출(VAT제외)", "매출총이익", "총내품출고수량"]
@@ -374,24 +392,81 @@ with tab1:
         "품목별매출(VAT제외)": "매출액", "총내품출고수량": "출고량"
     })
 
-    show_label = st.checkbox("📊 라벨 표시", value=True)
+    # 26년 데이터가 있는 월 추출 → 해당 월의 전년 동월 데이터 매핑
+    current_months_26 = [m for m in monthly["출고년월"].tolist() if m.startswith("2026")]
+    has_26_data = len(current_months_26) > 0
 
+    # 전년 동월 매출 컬럼 추가
+    def get_prev_year_sales(ym):
+        try:
+            dt = pd.to_datetime(ym + "-01")
+            prev_ym = (dt - relativedelta(years=1)).strftime("%Y-%m")
+            return PREV_YEAR_SALES.get(prev_ym, None)
+        except:
+            return None
+
+    monthly["전년동월매출"] = monthly["출고년월"].apply(get_prev_year_sales)
+
+    # 컨트롤 영역
+    ctrl1, ctrl2 = st.columns([1, 1])
+    with ctrl1:
+        show_label = st.checkbox("📊 라벨 표시", value=True)
+    with ctrl2:
+        # 26년 데이터가 있는 경우에만 토글 표시, 기본값 ON
+        if has_26_data:
+            show_prev_year = st.checkbox("📅 전년 동월 비교 표시", value=True)
+        else:
+            show_prev_year = False
+
+    # -----------------------------------
+    # 매출액 + 매출총이익 + 전년동월 그래프
+    # -----------------------------------
     fig = go.Figure()
+
+    # 전년 동월 Bar (26년 데이터가 있고 토글 ON일 때만)
+    if has_26_data and show_prev_year:
+        prev_data = monthly.dropna(subset=["전년동월매출"])
+        if not prev_data.empty:
+            fig.add_trace(go.Bar(
+                x=prev_data["출고년월"],
+                y=prev_data["전년동월매출"],
+                name="매출액 (전년 동월)",
+                marker_color="rgba(214, 39, 40, 0.4)",
+                text=prev_data["전년동월매출"] if show_label else None,
+                texttemplate='%{text:,.0f}', textposition='outside', cliponaxis=False
+            ))
+            
+    # 26년 매출 Bar
     fig.add_trace(go.Bar(
-        x=monthly["출고년월"], y=monthly["매출액"], name="매출액",
+        x=monthly["출고년월"],
+        y=monthly["매출액"],
+        name="매출액 (26년)",
+        marker_color="#1f77b4",
         text=monthly["매출액"] if show_label else None,
         texttemplate='%{text:,.0f}', textposition='outside', cliponaxis=False
     ))
+
+    # 매출총이익 Line
     fig.add_trace(go.Scatter(
-        x=monthly["출고년월"], y=monthly["매출총이익"], name="매출총이익",
+        x=monthly["출고년월"],
+        y=monthly["매출총이익"],
+        name="매출총이익",
         mode="lines+markers+text" if show_label else "lines+markers",
-        line=dict(width=4),
+        line=dict(width=4, color="#e73535"),
         text=monthly["매출총이익"] if show_label else None,
         texttemplate='%{text:,.0f}', textposition="top center"
     ))
-    y_max = max(monthly["매출액"].max(), monthly["매출총이익"].max()) * 1.25
+
+
+    # Y축 범위: 전년 데이터 포함해서 계산
+    y_vals = [monthly["매출액"].max(), monthly["매출총이익"].max()]
+    if has_26_data and show_prev_year and not monthly["전년동월매출"].dropna().empty:
+        y_vals.append(monthly["전년동월매출"].dropna().max())
+    y_max = max(y_vals) * 1.25
+
     fig.update_layout(
         height=400,
+        barmode="group",
         yaxis=dict(range=[0, y_max]),
         legend=dict(orientation="h"),
         margin=dict(t=40)
@@ -399,6 +474,40 @@ with tab1:
     fig.update_traces(textfont=dict(size=12, color="black"))
     st.plotly_chart(fig, use_container_width=True)
 
+    # 전년 동월 비교 표 (26년 데이터가 있고 토글 ON일 때만)
+    if has_26_data and show_prev_year:
+        st.markdown("##### 📊 전년 동월 대비 매출 비교")
+        compare_df = monthly[monthly["출고년월"].isin(current_months_26)][
+            ["출고년월", "매출액", "전년동월매출"]
+        ].copy()
+        compare_df = compare_df.rename(columns={
+            "출고년월": "월",
+            "매출액": "26년 매출액",
+            "전년동월매출": "25년 동월 매출액"
+        })
+        compare_df["증감액"] = compare_df["26년 매출액"] - compare_df["25년 동월 매출액"].fillna(0)
+        compare_df["증감률"] = np.where(
+            compare_df["25년 동월 매출액"] > 0,
+            (compare_df["증감액"] / compare_df["25년 동월 매출액"]) * 100,
+            np.nan
+        )
+        st.dataframe(
+            compare_df.style.format({
+                "26년 매출액":    "{:,.0f}",
+                "25년 동월 매출액": "{:,.0f}",
+                "증감액":         "{:+,.0f}",
+                "증감률":         "{:+.1f}%",
+            }).applymap(
+                lambda v: "color: #d62728" if isinstance(v, str) and v.startswith("-") else
+                          ("color: #2ca02c" if isinstance(v, str) and v.startswith("+") else ""),
+                subset=["증감액", "증감률"]
+            ),
+            use_container_width=True
+        )
+
+    # -----------------------------------
+    # 출고량 그래프
+    # -----------------------------------
     st.markdown("### 📦 월별 출고량")
     fig_qty = go.Figure()
     fig_qty.add_trace(go.Bar(
@@ -470,15 +579,26 @@ with tab2:
 
     # 월별 [매출액 / 구성비] 컬럼 쌍으로 재구성
     ch_display_cols = []
-
+    ch_display_fmt  = {}
     for m in ch_sales_mcols:
         ratio_col = f"{m}_구성비"
         ch_sales_pivot[ratio_col] = ch_sales_pivot[m] / ch_month_totals[m] if ch_month_totals[m] > 0 else 0
         ch_display_cols += [m, ratio_col]
+        ch_display_fmt[m]          = "{:,.0f}"
+        ch_display_fmt[ratio_col]  = "{:.1%}"
 
+    # 컬럼명 보기 좋게 rename
+    rename_map = {f"{m}_구성비": f"{m}_구성비" for m in ch_sales_mcols}
     ch_display = ch_sales_pivot[ch_display_cols].copy()
 
-    # MultiIndex 컬럼 구성
+    # MultiIndex 헤더 구성
+    multi_cols = pd.MultiIndex.from_tuples(
+        [(m, "매출액") if "_구성비" not in c else (m.replace("_구성비", ""), "구성비")
+         for c in ch_display_cols
+         for m in ([c] if "_구성비" not in c else [c.replace("_구성비", "")])],
+        names=["월", "구분"]
+    )
+    # MultiIndex 직접 구성
     tuples = []
     for c in ch_display_cols:
         if c in ch_sales_mcols:
@@ -486,19 +606,9 @@ with tab2:
         else:
             base_m = c.replace("_구성비", "")
             tuples.append((base_m, "구성비"))
-
     ch_display.columns = pd.MultiIndex.from_tuples(tuples)
 
-    # 🔥 핵심: MultiIndex 기준 format
-    ch_display_fmt = {}
-    for m in ch_sales_mcols:
-        ch_display_fmt[(m, "매출액")] = "{:,.0f}"
-        ch_display_fmt[(m, "구성비")] = "{:.0%}"
-
-    st.dataframe(
-        ch_display.style.format(ch_display_fmt),
-        use_container_width=True
-    )
+    st.dataframe(ch_display.style.format(ch_display_fmt), use_container_width=True)
 
     # ── 월별 채널별 출고량 (아래) ──
     st.subheader("📦 월별 채널별 출고량")
@@ -585,7 +695,7 @@ with tab3:
 
     # 월별 [매출액 / 구성비 / 개당단가] 컬럼 쌍으로 재구성
     prod_display_cols = []
-
+    prod_display_fmt  = {}
     for m in prod_s_mcols:
         ratio_col = f"{m}_구성비"
         price_col = f"{m}_개당단가"
@@ -601,10 +711,13 @@ with tab3:
         )
 
         prod_display_cols += [m, ratio_col, price_col]
+        prod_display_fmt[m]          = "{:,.0f}"
+        prod_display_fmt[ratio_col]  = "{:.1%}"
+        prod_display_fmt[price_col]  = "{:,.0f}"
 
     prod_display = prod_s_pivot[prod_display_cols].copy()
 
-    # MultiIndex 컬럼 구성
+    # MultiIndex 헤더
     tuples_prod = []
     for c in prod_display_cols:
         if c in prod_s_mcols:
@@ -613,20 +726,9 @@ with tab3:
             tuples_prod.append((c.replace("_구성비", ""), "구성비"))
         else:
             tuples_prod.append((c.replace("_개당단가", ""), "개당단가"))
-
     prod_display.columns = pd.MultiIndex.from_tuples(tuples_prod)
 
-    # 🔥 핵심: MultiIndex 기준 format
-    prod_display_fmt = {}
-    for m in prod_s_mcols:
-        prod_display_fmt[(m, "매출액")]   = "{:,.0f}"
-        prod_display_fmt[(m, "구성비")]   = "{:.0%}"
-        prod_display_fmt[(m, "개당단가")] = "{:,.0f}"
-
-    st.dataframe(
-        prod_display.style.format(prod_display_fmt),
-        use_container_width=True
-    )
+    st.dataframe(prod_display.style.format(prod_display_fmt), use_container_width=True)
 
     # ── 월별 제품별 출고량 (아래) ──
     st.subheader("📦 월별 제품별 출고량")
@@ -846,7 +948,7 @@ with tab5:
     st.download_button(
         label="📥 분석 결과 통합 엑셀 다운로드",
         data=download_file,
-        file_name="Lingtea_Dashboard_v5.3.1.xlsx",
+        file_name="Lingtea_Dashboard_v5.3.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
     st.markdown("### 포함 시트")
@@ -855,4 +957,4 @@ with tab5:
     st.write("- 월별 제품 매출액")
     st.write("- 월별 제품 출고량")
 
-st.success("🚀 Lingtea Dashboard v5.3.1 Ready")
+st.success("🚀 Lingtea Dashboard v5.3.2 Ready")
