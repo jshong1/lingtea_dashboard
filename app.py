@@ -578,34 +578,27 @@ with tab2:
 
     # 월별 [매출액 / 구성비] 컬럼 쌍으로 재구성
     ch_display_cols = []
-    ch_display_fmt  = {}
     for m in ch_sales_mcols:
         ratio_col = f"{m}_구성비"
         ch_sales_pivot[ratio_col] = ch_sales_pivot[m] / ch_month_totals[m] if ch_month_totals[m] > 0 else 0
         ch_display_cols += [m, ratio_col]
-        ch_display_fmt[m]          = "{:,.0f}"
-        ch_display_fmt[ratio_col]  = "{:.1%}"
 
-    # 컬럼명 보기 좋게 rename
-    rename_map = {f"{m}_구성비": f"{m}_구성비" for m in ch_sales_mcols}
     ch_display = ch_sales_pivot[ch_display_cols].copy()
 
     # MultiIndex 헤더 구성
-    multi_cols = pd.MultiIndex.from_tuples(
-        [(m, "매출액") if "_구성비" not in c else (m.replace("_구성비", ""), "구성비")
-         for c in ch_display_cols
-         for m in ([c] if "_구성비" not in c else [c.replace("_구성비", "")])],
-        names=["월", "구분"]
-    )
-    # MultiIndex 직접 구성
     tuples = []
     for c in ch_display_cols:
         if c in ch_sales_mcols:
             tuples.append((c, "매출액"))
         else:
-            base_m = c.replace("_구성비", "")
-            tuples.append((base_m, "구성비"))
+            tuples.append((c.replace("_구성비", ""), "구성비"))
     ch_display.columns = pd.MultiIndex.from_tuples(tuples)
+
+    # MultiIndex 기준 format (키를 tuple로)
+    ch_display_fmt = {}
+    for m in ch_sales_mcols:
+        ch_display_fmt[(m, "매출액")] = "{:,.0f}"
+        ch_display_fmt[(m, "구성비")] = "{:.1%}"
 
     st.dataframe(ch_display.style.format(ch_display_fmt), use_container_width=True)
 
@@ -694,7 +687,6 @@ with tab3:
 
     # 월별 [매출액 / 구성비 / 개당단가] 컬럼 쌍으로 재구성
     prod_display_cols = []
-    prod_display_fmt  = {}
     for m in prod_s_mcols:
         ratio_col = f"{m}_구성비"
         price_col = f"{m}_개당단가"
@@ -710,9 +702,6 @@ with tab3:
         )
 
         prod_display_cols += [m, ratio_col, price_col]
-        prod_display_fmt[m]          = "{:,.0f}"
-        prod_display_fmt[ratio_col]  = "{:.1%}"
-        prod_display_fmt[price_col]  = "{:,.0f}"
 
     prod_display = prod_s_pivot[prod_display_cols].copy()
 
@@ -726,6 +715,13 @@ with tab3:
         else:
             tuples_prod.append((c.replace("_개당단가", ""), "개당단가"))
     prod_display.columns = pd.MultiIndex.from_tuples(tuples_prod)
+
+    # MultiIndex 기준 format (키를 tuple로)
+    prod_display_fmt = {}
+    for m in prod_s_mcols:
+        prod_display_fmt[(m, "매출액")]   = "{:,.0f}"
+        prod_display_fmt[(m, "구성비")]   = "{:.1%}"
+        prod_display_fmt[(m, "개당단가")] = "{:,.0f}"
 
     st.dataframe(prod_display.style.format(prod_display_fmt), use_container_width=True)
 
