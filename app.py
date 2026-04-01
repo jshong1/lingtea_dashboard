@@ -598,7 +598,7 @@ with tab2:
     ch_display_fmt = {}
     for m in ch_sales_mcols:
         ch_display_fmt[(m, "매출액")] = "{:,.0f}"
-        ch_display_fmt[(m, "구성비")] = "{:.1%}"
+        ch_display_fmt[(m, "구성비")] = "{:.0%}"
 
     st.dataframe(ch_display.style.format(ch_display_fmt), use_container_width=True)
 
@@ -720,7 +720,7 @@ with tab3:
     prod_display_fmt = {}
     for m in prod_s_mcols:
         prod_display_fmt[(m, "매출액")]   = "{:,.0f}"
-        prod_display_fmt[(m, "구성비")]   = "{:.1%}"
+        prod_display_fmt[(m, "구성비")]   = "{:.0%}"
         prod_display_fmt[(m, "개당단가")] = "{:,.0f}"
 
     st.dataframe(prod_display.style.format(prod_display_fmt), use_container_width=True)
