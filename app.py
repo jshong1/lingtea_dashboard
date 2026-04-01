@@ -431,7 +431,7 @@ with tab1:
                 x=prev_data["출고년월"],
                 y=prev_data["전년동월매출"],
                 name="매출액 (전년 동월)",
-                marker_color="rgba(160, 160, 160, 0.6)",
+                marker_color="#D1D5DB",
                 text=prev_data["전년동월매출"] if show_label else None,
                 texttemplate='%{text:,.0f}', textposition='outside', cliponaxis=False
             ))
@@ -452,7 +452,7 @@ with tab1:
         y=monthly["매출총이익"],
         name="매출총이익",
         mode="lines+markers+text" if show_label else "lines+markers",
-        line=dict(width=4, color="#c0392b"),
+        line=dict(width=4, color="#EF4444"),
         text=monthly["매출총이익"] if show_label else None,
         texttemplate='%{text:,.0f}', textposition="top center"
     ))
