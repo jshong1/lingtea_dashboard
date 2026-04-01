@@ -423,19 +423,6 @@ with tab1:
     # -----------------------------------
     fig = go.Figure()
 
-    # 전년 동월 Bar (26년 데이터가 있고 토글 ON일 때만)
-    if has_26_data and show_prev_year:
-        prev_data = monthly.dropna(subset=["전년동월매출"])
-        if not prev_data.empty:
-            fig.add_trace(go.Bar(
-                x=prev_data["출고년월"],
-                y=prev_data["전년동월매출"],
-                name="매출액 (전년 동월)",
-                marker_color="rgba(214, 39, 40, 0.4)",
-                text=prev_data["전년동월매출"] if show_label else None,
-                texttemplate='%{text:,.0f}', textposition='outside', cliponaxis=False
-            ))
-            
     # 26년 매출 Bar
     fig.add_trace(go.Bar(
         x=monthly["출고년월"],
@@ -452,11 +439,23 @@ with tab1:
         y=monthly["매출총이익"],
         name="매출총이익",
         mode="lines+markers+text" if show_label else "lines+markers",
-        line=dict(width=4, color="#e73535"),
+        line=dict(width=4, color="#ff7f0e"),
         text=monthly["매출총이익"] if show_label else None,
         texttemplate='%{text:,.0f}', textposition="top center"
     ))
 
+    # 전년 동월 Bar (26년 데이터가 있고 토글 ON일 때만)
+    if has_26_data and show_prev_year:
+        prev_data = monthly.dropna(subset=["전년동월매출"])
+        if not prev_data.empty:
+            fig.add_trace(go.Bar(
+                x=prev_data["출고년월"],
+                y=prev_data["전년동월매출"],
+                name="매출액 (전년 동월)",
+                marker_color="rgba(214, 39, 40, 0.4)",
+                text=prev_data["전년동월매출"] if show_label else None,
+                texttemplate='%{text:,.0f}', textposition='outside', cliponaxis=False
+            ))
 
     # Y축 범위: 전년 데이터 포함해서 계산
     y_vals = [monthly["매출액"].max(), monthly["매출총이익"].max()]
@@ -493,11 +492,11 @@ with tab1:
         )
         st.dataframe(
             compare_df.style.format({
-                "26년 매출액":    "{:,.0f}",
+                "26년 매출액":      "{:,.0f}",
                 "25년 동월 매출액": "{:,.0f}",
-                "증감액":         "{:+,.0f}",
-                "증감률":         "{:+.1f}%",
-            }).applymap(
+                "증감액":           "{:+,.0f}",
+                "증감률":           "{:+.1f}%",
+            }).map(
                 lambda v: "color: #d62728" if isinstance(v, str) and v.startswith("-") else
                           ("color: #2ca02c" if isinstance(v, str) and v.startswith("+") else ""),
                 subset=["증감액", "증감률"]
