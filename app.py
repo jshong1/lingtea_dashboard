@@ -423,7 +423,20 @@ with tab1:
     # -----------------------------------
     fig = go.Figure()
 
-    # 26년 매출 Bar
+    # 전년 동월 Bar → 먼저 추가해야 barmode=group에서 왼쪽에 표시
+    if has_26_data and show_prev_year:
+        prev_data = monthly.dropna(subset=["전년동월매출"])
+        if not prev_data.empty:
+            fig.add_trace(go.Bar(
+                x=prev_data["출고년월"],
+                y=prev_data["전년동월매출"],
+                name="매출액 (전년 동월)",
+                marker_color="rgba(160, 160, 160, 0.6)",
+                text=prev_data["전년동월매출"] if show_label else None,
+                texttemplate='%{text:,.0f}', textposition='outside', cliponaxis=False
+            ))
+
+    # 26년 매출 Bar → 나중에 추가해야 오른쪽에 표시
     fig.add_trace(go.Bar(
         x=monthly["출고년월"],
         y=monthly["매출액"],
@@ -433,29 +446,16 @@ with tab1:
         texttemplate='%{text:,.0f}', textposition='outside', cliponaxis=False
     ))
 
-    # 매출총이익 Line
+    # 매출총이익 Line (붉은 계열)
     fig.add_trace(go.Scatter(
         x=monthly["출고년월"],
         y=monthly["매출총이익"],
         name="매출총이익",
         mode="lines+markers+text" if show_label else "lines+markers",
-        line=dict(width=4, color="#ff7f0e"),
+        line=dict(width=4, color="#c0392b"),
         text=monthly["매출총이익"] if show_label else None,
         texttemplate='%{text:,.0f}', textposition="top center"
     ))
-
-    # 전년 동월 Bar (26년 데이터가 있고 토글 ON일 때만)
-    if has_26_data and show_prev_year:
-        prev_data = monthly.dropna(subset=["전년동월매출"])
-        if not prev_data.empty:
-            fig.add_trace(go.Bar(
-                x=prev_data["출고년월"],
-                y=prev_data["전년동월매출"],
-                name="매출액 (전년 동월)",
-                marker_color="rgba(214, 39, 40, 0.4)",
-                text=prev_data["전년동월매출"] if show_label else None,
-                texttemplate='%{text:,.0f}', textposition='outside', cliponaxis=False
-            ))
 
     # Y축 범위: 전년 데이터 포함해서 계산
     y_vals = [monthly["매출액"].max(), monthly["매출총이익"].max()]
