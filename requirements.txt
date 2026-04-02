@@ -9,3 +9,4 @@ google-api-python-client
 plotly
 openpyxl
 firebase-admin
+streamlit-cookies-manager
