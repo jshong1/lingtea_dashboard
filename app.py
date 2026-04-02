@@ -13,6 +13,7 @@ from dateutil.relativedelta import relativedelta
 from google.oauth2.service_account import Credentials
 import firebase_admin
 from firebase_admin import credentials, firestore, auth as firebase_auth
+from streamlit_cookies_manager import EncryptedCookieManager
 
 # -----------------------------------
 # 기본 설정
@@ -37,6 +38,16 @@ def init_firebase():
 
 init_firebase()
 db = firestore.client()
+
+# -----------------------------------
+# 쿠키 매니저 (새로고침 로그인 유지)
+# -----------------------------------
+cookies = EncryptedCookieManager(
+    prefix="lingtea_",
+    password=st.secrets.get("cookie_secret", "lingtea-dashboard-secret-key-2024")
+)
+if not cookies.ready():
+    st.stop()
 
 # -----------------------------------
 # 로그인/회원가입 CSS
@@ -320,6 +331,10 @@ def handle_login(email: str, password: str):
     st.session_state["role"]      = user_doc.get("role", "user")
     st.session_state["id_token"]  = id_token
     st.session_state["tabs_perm"] = user_doc.get("tabs", DEFAULT_USER_TABS.copy())
+    # 쿠키에 저장 (새로고침 후 복원용)
+    cookies["uid"]   = uid
+    cookies["email"] = email
+    cookies.save()
     return True, "ok"
 
 # -----------------------------------
@@ -440,10 +455,30 @@ def show_login():
                 st.rerun()
 
 # -----------------------------------
-# 세션 상태 초기화 확인
+# 세션 복원 (쿠키 → session_state)
 # -----------------------------------
 if "logged_in" not in st.session_state:
     st.session_state["logged_in"] = False
+
+# 쿠키에 uid가 저장돼 있으면 Firestore에서 유저 정보 복원
+if not st.session_state["logged_in"] and cookies.get("uid"):
+    try:
+        uid   = cookies["uid"]
+        email = cookies.get("email", "")
+        user_doc = get_user_doc(uid)
+        if user_doc and not user_doc.get("disabled", False):
+            admin_emails = list(st.secrets["auth"]["admin_emails"])
+            role = "admin" if email in admin_emails else user_doc.get("role", "user")
+            st.session_state["logged_in"] = True
+            st.session_state["uid"]       = uid
+            st.session_state["email"]     = email
+            st.session_state["role"]      = role
+            st.session_state["tabs_perm"] = user_doc.get("tabs", DEFAULT_USER_TABS.copy())
+    except Exception:
+        # 복원 실패 시 쿠키 초기화
+        cookies["uid"]   = ""
+        cookies["email"] = ""
+        cookies.save()
 
 if not st.session_state["logged_in"]:
     show_login()
@@ -457,6 +492,10 @@ with st.sidebar:
     role_badge = "🔑 관리자" if st.session_state["role"] == "admin" else "👤 사용자"
     st.caption(role_badge)
     if st.button("로그아웃", use_container_width=True):
+        # 쿠키 삭제
+        cookies["uid"]   = ""
+        cookies["email"] = ""
+        cookies.save()
         for k in ["logged_in", "uid", "email", "role", "id_token", "tabs_perm",
                   "logistics_table", "ad_cost_monthly", "channel_cost"]:
             st.session_state.pop(k, None)
