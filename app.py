@@ -779,19 +779,43 @@ st.title("📊 Lingtea Dashboard")
 st.caption("월별 채널/제품 분석 + 매출/출고량/공헌이익 통합 대시보드")
 
 st.sidebar.header("📌 필터")
-all_months         = sort_month_cols(df["출고년월"].dropna().unique().tolist())
+
+# 출고일자 기반 기간 필터
+_valid_dates = df["출고일자"].dropna()
+_min_date    = _valid_dates.min().date()
+_max_date    = _valid_dates.max().date()
+
+st.sidebar.markdown("**📅 기간 설정**")
+_date_start = st.sidebar.date_input("시작일", value=_min_date, min_value=_min_date, max_value=_max_date, key="date_start")
+_date_end   = st.sidebar.date_input("종료일", value=_max_date, min_value=_min_date, max_value=_max_date, key="date_end")
+
+if _date_start > _date_end:
+    st.sidebar.error("시작일이 종료일보다 늦을 수 없습니다.")
+    st.stop()
+
+import datetime as _dt
+_date_start_dt = pd.Timestamp(_date_start)
+_date_end_dt   = pd.Timestamp(_date_end) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+
+# all_months: 전체 데이터 기준 월 목록 (공헌이익 탭 비용표 등에서 사용)
+all_months = sort_month_cols(df["출고년월"].dropna().unique().tolist())
+
+# 기간 내 출고년월 목록 역산 (비용 배분 루프용 selected_months 유지)
+_date_filtered_df  = df[(df["출고일자"] >= _date_start_dt) & (df["출고일자"] <= _date_end_dt)]
+selected_months    = sort_month_cols(_date_filtered_df["출고년월"].dropna().unique().tolist())
+
 all_channel_groups = sorted(df["거래처분류"].dropna().unique().tolist())
 all_items          = sorted(df["내품상품명"].dropna().unique().tolist())
 
-selected_months         = st.sidebar.multiselect("출고년월", all_months,         default=all_months)
-selected_channel_groups = st.sidebar.multiselect("채널",    all_channel_groups, default=all_channel_groups)
-selected_items          = st.sidebar.multiselect("품목",    all_items,          default=all_items)
+selected_channel_groups = st.sidebar.multiselect("채널", all_channel_groups, default=all_channel_groups)
+selected_items          = st.sidebar.multiselect("품목", all_items,          default=all_items)
 
 # -----------------------------------
 # filtered_df
 # -----------------------------------
 filtered_df = df[
-    (df["출고년월"].isin(selected_months)) &
+    (df["출고일자"] >= _date_start_dt) &
+    (df["출고일자"] <= _date_end_dt) &
     (df["거래처분류"].isin(selected_channel_groups)) &
     (df["내품상품명"].isin(selected_items))
 ].copy()
@@ -1354,7 +1378,7 @@ if "다운로드" in tab_map:
         st.download_button(
             label="📥 분석 결과 통합 엑셀 다운로드",
             data=download_file,
-            file_name="Lingtea_Dashboard_v7.0.xlsx",
+            file_name="Lingtea_Dashboard_v7.1.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
         st.markdown("### 포함 시트")
@@ -1479,4 +1503,4 @@ if st.session_state["role"] == "admin":
                         st.success(f"{email} 계정이 삭제되었습니다.")
                         st.rerun()
 
-st.success("🚀 Lingtea Dashboard v7.0 Ready")
+st.success("🚀 Lingtea Dashboard v7.1 Ready")
