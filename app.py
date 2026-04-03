@@ -843,6 +843,31 @@ filtered_df["공헌이익률"] = safe_divide(filtered_df["공헌이익"], filter
 # -----------------------------------
 # KPI
 # -----------------------------------
+# 탭 구성 (권한에 따라 동적 생성) — KPI보다 먼저 체크
+# -----------------------------------
+tab_defs = {
+    "월별추이":    "📈 월별 추이",
+    "채널분석":    "🏪 채널 분석",
+    "제품분석":    "📦 제품 분석",
+    "공헌이익분석": "📊 공헌이익 분석",
+    "제품별원가":  "💰 제품별 원가",
+    "다운로드":    "📥 다운로드",
+}
+
+visible_tabs = [k for k in ALL_TABS if tab_allowed(k)]
+
+if st.session_state["role"] == "admin":
+    visible_tabs_labels = [tab_defs[k] for k in visible_tabs] + ["⚙️ 관리자"]
+else:
+    visible_tabs_labels = [tab_defs[k] for k in visible_tabs]
+
+if not visible_tabs:
+    st.warning("접근 가능한 탭이 없습니다. 관리자에게 권한을 요청하세요.")
+    st.stop()
+
+# -----------------------------------
+# KPI (탭 권한 있는 사용자에게만 표시)
+# -----------------------------------
 st.markdown("""
 <style>[data-testid="stMetricValue"] { font-size: 28px; }</style>
 """, unsafe_allow_html=True)
@@ -874,29 +899,6 @@ c4.metric("매출 총 이익률",                f"{gross_profit_rate:.2f}%")
 c5.metric("Top 채널", top_channel,         delta=f"{sales_mom:.2f}% MoM")
 
 st.divider()
-
-# -----------------------------------
-# 탭 구성 (권한에 따라 동적 생성)
-# -----------------------------------
-tab_defs = {
-    "월별추이":    "📈 월별 추이",
-    "채널분석":    "🏪 채널 분석",
-    "제품분석":    "📦 제품 분석",
-    "공헌이익분석": "📊 공헌이익 분석",
-    "제품별원가":  "💰 제품별 원가",
-    "다운로드":    "📥 다운로드",
-}
-
-visible_tabs = [k for k in ALL_TABS if tab_allowed(k)]
-
-if st.session_state["role"] == "admin":
-    visible_tabs_labels = [tab_defs[k] for k in visible_tabs] + ["⚙️ 관리자"]
-else:
-    visible_tabs_labels = [tab_defs[k] for k in visible_tabs]
-
-if not visible_tabs:
-    st.warning("접근 가능한 탭이 없습니다. 관리자에게 권한을 요청하세요.")
-    st.stop()
 
 created_tabs = st.tabs(visible_tabs_labels)
 
@@ -1572,4 +1574,4 @@ if "제품별원가" in tab_map:
                     height=500
                 )
 
-st.success("🚀 Lingtea Dashboard v7.1 Ready")
+st.success("🚀 Lingtea Dashboard v7.2 Ready")
