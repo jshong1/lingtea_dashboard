@@ -13,7 +13,6 @@ from dateutil.relativedelta import relativedelta
 from google.oauth2.service_account import Credentials
 import firebase_admin
 from firebase_admin import credentials, firestore, auth as firebase_auth
-from streamlit_cookies_manager import EncryptedCookieManager
 
 # -----------------------------------
 # 기본 설정
@@ -22,7 +21,7 @@ st.set_page_config(page_title="Lingtea Dashboard", layout="wide")
 
 SHEET_ID = "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
 
-ALL_TABS = ["월별추이", "채널분석", "제품분석", "공헌이익분석", "다운로드"]
+ALL_TABS = ["월별추이", "채널분석", "제품분석", "공헌이익분석", "제품별원가", "다운로드"]
 
 DEFAULT_USER_TABS = {t: False for t in ALL_TABS}
 DEFAULT_ADMIN_TABS = {t: True for t in ALL_TABS}
@@ -38,16 +37,6 @@ def init_firebase():
 
 init_firebase()
 db = firestore.client()
-
-# -----------------------------------
-# 쿠키 매니저 (새로고침 로그인 유지)
-# -----------------------------------
-cookies = EncryptedCookieManager(
-    prefix="lingtea_",
-    password=st.secrets.get("cookie_secret", "lingtea-dashboard-secret-key-2024")
-)
-if not cookies.ready():
-    st.stop()
 
 # -----------------------------------
 # 로그인/회원가입 CSS
@@ -332,9 +321,7 @@ def handle_login(email: str, password: str):
     st.session_state["id_token"]  = id_token
     st.session_state["tabs_perm"] = user_doc.get("tabs", DEFAULT_USER_TABS.copy())
     # 쿠키에 저장 (새로고침 후 복원용)
-    cookies["uid"]   = uid
-    cookies["email"] = email
-    cookies.save()
+    st.query_params["sid"] = uid
     return True, "ok"
 
 # -----------------------------------
@@ -460,25 +447,26 @@ def show_login():
 if "logged_in" not in st.session_state:
     st.session_state["logged_in"] = False
 
-# 쿠키에 uid가 저장돼 있으면 Firestore에서 유저 정보 복원
-if not st.session_state["logged_in"] and cookies.get("uid"):
-    try:
-        uid   = cookies["uid"]
-        email = cookies.get("email", "")
-        user_doc = get_user_doc(uid)
-        if user_doc and not user_doc.get("disabled", False):
-            admin_emails = list(st.secrets["auth"]["admin_emails"])
-            role = "admin" if email in admin_emails else user_doc.get("role", "user")
-            st.session_state["logged_in"] = True
-            st.session_state["uid"]       = uid
-            st.session_state["email"]     = email
-            st.session_state["role"]      = role
-            st.session_state["tabs_perm"] = user_doc.get("tabs", DEFAULT_USER_TABS.copy())
-    except Exception:
-        # 복원 실패 시 쿠키 초기화
-        cookies["uid"]   = ""
-        cookies["email"] = ""
-        cookies.save()
+# -----------------------------------
+# query_params 기반 세션 복원 (새로고침 유지)
+# 로그인 시 uid를 ?sid=에 저장 → 새로고침 후 Firestore에서 복원
+# -----------------------------------
+if not st.session_state["logged_in"]:
+    _sid = st.query_params.get("sid", "")
+    if _sid:
+        try:
+            user_doc = get_user_doc(_sid)
+            if user_doc and not user_doc.get("disabled", False):
+                _email = user_doc.get("email", "")
+                admin_emails = list(st.secrets["auth"]["admin_emails"])
+                role = "admin" if _email in admin_emails else user_doc.get("role", "user")
+                st.session_state["logged_in"] = True
+                st.session_state["uid"]       = _sid
+                st.session_state["email"]     = _email
+                st.session_state["role"]      = role
+                st.session_state["tabs_perm"] = user_doc.get("tabs", DEFAULT_USER_TABS.copy())
+        except Exception:
+            st.query_params.clear()
 
 if not st.session_state["logged_in"]:
     show_login()
@@ -493,9 +481,7 @@ with st.sidebar:
     st.caption(role_badge)
     if st.button("로그아웃", use_container_width=True):
         # 쿠키 삭제
-        cookies["uid"]   = ""
-        cookies["email"] = ""
-        cookies.save()
+        st.query_params.clear()
         for k in ["logged_in", "uid", "email", "role", "id_token", "tabs_perm",
                   "logistics_table", "ad_cost_monthly", "channel_cost"]:
             st.session_state.pop(k, None)
@@ -897,6 +883,7 @@ tab_defs = {
     "채널분석":    "🏪 채널 분석",
     "제품분석":    "📦 제품 분석",
     "공헌이익분석": "📊 공헌이익 분석",
+    "제품별원가":  "💰 제품별 원가",
     "다운로드":    "📥 다운로드",
 }
 
@@ -1378,7 +1365,7 @@ if "다운로드" in tab_map:
         st.download_button(
             label="📥 분석 결과 통합 엑셀 다운로드",
             data=download_file,
-            file_name="Lingtea_Dashboard_v7.1.xlsx",
+            file_name="Lingtea_Dashboard_v7.0.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
         st.markdown("### 포함 시트")
@@ -1502,5 +1489,87 @@ if st.session_state["role"] == "admin":
                         delete_user(uid)
                         st.success(f"{email} 계정이 삭제되었습니다.")
                         st.rerun()
+
+# ===================================
+# TAB 6: 제품별 원가
+# ===================================
+if "제품별원가" in tab_map:
+    with tab_map["제품별원가"]:
+        st.subheader("💰 제품별 원가")
+
+        @st.cache_data(ttl=600)
+        def load_cost_master_table():
+            client = get_gspread_client()
+            ws   = client.open_by_key(SHEET_ID).worksheet("COST_MASTER")
+            data = ws.get_all_values()
+            if not data or len(data) < 2:
+                return pd.DataFrame()
+            raw_headers = [str(h).strip() for h in data[0]]
+            cm_df = pd.DataFrame(data[1:], columns=raw_headers).copy()
+            return cm_df
+
+        cm_df = load_cost_master_table()
+
+        if cm_df.empty:
+            st.warning("COST_MASTER 시트에 데이터가 없습니다.")
+        else:
+            # 컬럼명 정규화
+            cm_df.columns = [str(c).strip() for c in cm_df.columns]
+
+            # 상품코드 컬럼 탐색
+            code_col  = next((c for c in cm_df.columns if "상품코드" in c), None)
+            name_col  = next((c for c in cm_df.columns if "상품명"  in c), None)
+            cost_col  = next((c for c in cm_df.columns if "원가"    in c), None)
+            ym_col    = next((c for c in cm_df.columns if "년월"    in c), None)
+
+            if not all([code_col, name_col, cost_col, ym_col]):
+                st.error(f"COST_MASTER 컬럼 인식 실패. 현재 컬럼: {cm_df.columns.tolist()}")
+            else:
+                # (1) 상품코드 필터: 숫자 8자리 + 3/4/7로 시작하는 코드만
+                cm_df[code_col] = cm_df[code_col].astype(str).str.strip()
+                cm_df = cm_df[
+                    cm_df[code_col].str.isdigit() &
+                    (cm_df[code_col].str.len() == 8) &
+                    (cm_df[code_col].str[0].isin(["3", "4", "7"]))
+                ].copy()
+
+                # (2) 제품원가 숫자 변환 (콤마 제거)
+                cm_df[cost_col] = pd.to_numeric(
+                    cm_df[cost_col].astype(str).str.replace(",", "", regex=False).str.strip(),
+                    errors="coerce"
+                )
+
+                # (3) Pivot 생성: index=[상품코드, 상품명], columns=년월, values=제품원가
+                pivot_df = cm_df.pivot_table(
+                    index=[code_col, name_col],
+                    columns=ym_col,
+                    values=cost_col,
+                    aggfunc="mean"
+                )
+
+                # (4) 월 컬럼 YYYY-MM 기준 오름차순 정렬
+                month_cols = sort_month_cols(pivot_df.columns.tolist())
+                pivot_df   = pivot_df[month_cols]
+
+                # (5) 평균 컬럼 추가 (NaN 자동 제외)
+                pivot_df["평균"] = pivot_df.mean(axis=1)
+
+                # (6) 컬럼명 rename 및 index reset
+                pivot_df = pivot_df.reset_index()
+                pivot_df = pivot_df.rename(columns={
+                    code_col: "제품코드",
+                    name_col: "제품명",
+                })
+
+                # (7) 숫자 컬럼 포맷 (천단위 콤마, NaN 유지)
+                num_cols    = [c for c in pivot_df.columns if c not in ["제품코드", "제품명"]]
+                fmt_dict    = {c: "{:,.2f}" for c in num_cols}
+
+                st.caption(f"총 {len(pivot_df)}개 제품 | 기간: {month_cols[0] if month_cols else '-'} ~ {month_cols[-1] if month_cols else '-'}")
+                st.dataframe(
+                    pivot_df.style.format(fmt_dict, na_rep="-"),
+                    use_container_width=True,
+                    height=500
+                )
 
 st.success("🚀 Lingtea Dashboard v7.1 Ready")
