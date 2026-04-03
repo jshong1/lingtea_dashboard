@@ -648,7 +648,37 @@ def load_master():
     cust_df["수수료율"]  = np.where(cust_df["수수료율"] > 1, cust_df["수수료율"] / 100, cust_df["수수료율"])
     cust_df["거래처명"]  = cust_df["거래처명"].astype(str).str.strip()
     cust_df["거래처분류"] = cust_df["거래처분류"].astype(str).str.strip()
+    # [추가] 담당부서 컬럼 정규화
+    if "담당부서" not in cust_df.columns:
+        cust_df["담당부서"] = ""
+    cust_df["담당부서"] = cust_df["담당부서"].astype(str).str.strip()
     return item_df, cust_df
+
+def load_auth_master():
+    """AUTH_MASTER 시트 로드. 캐시 없음 (캐시 오염 방지).
+    컬럼 구조: e-mail(A) | 담당부서(B) | 비고(C) — 3컬럼 고정.
+    컬럼명 재지정 금지. 헤더는 리스트 컴프리헨션으로 strip만 적용.
+    반환값: (auth_df, email_col, dept_col) 튜플."""
+    client = get_gspread_client()
+    ws   = client.open_by_key(SHEET_ID).worksheet("AUTH_MASTER")
+    data = ws.get_all_values()
+    if not data or len(data) < 1:
+        return pd.DataFrame(), None, None
+    # 헤더: 리스트 컴프리헨션으로 strip — Index.str / DataFrame.str 일절 사용 안 함
+    raw_headers = [str(h).strip() for h in data[0]]
+    rows        = data[1:]
+    auth_df = pd.DataFrame(rows, columns=raw_headers).copy()
+    # 컬럼명 탐색: 'e-mail' 또는 'email' 허용, '담당부서' 포함
+    email_col = next((c for c in raw_headers if c.lower().replace("-", "") == "email"), None)
+    dept_col  = next((c for c in raw_headers if "담당부서" in c), None)
+    if email_col is None or dept_col is None:
+        return auth_df, None, None
+    # 중복 컬럼 제거: 같은 이름 컬럼이 2개 이상이면 첫 번째만 유지
+    auth_df = auth_df.loc[:, ~auth_df.columns.duplicated()].copy()
+    # 값 정규화 (컬럼명 변경 없음, Series 단일 접근 보장)
+    auth_df[email_col] = auth_df[email_col].astype(str).str.strip().str.lower()
+    auth_df[dept_col]  = auth_df[dept_col].astype(str).str.strip()
+    return auth_df, email_col, dept_col
 
 @st.cache_data(ttl=600)
 def build_dataset():
@@ -657,11 +687,24 @@ def build_dataset():
     cost_dict = load_cost_master()
     merged = df.merge(item_df[["상품명", "품목군"]], left_on="내품상품명", right_on="상품명", how="left")
     merged["거래처분류"] = merged["거래처코드"]
-    merged = merged.merge(cust_df[["거래처분류", "수수료율", "국내여부"]].drop_duplicates(),
-                          on="거래처분류", how="left")
+    # [추가] 거래처분류(CUSTOMER_MASTER B열) 기준으로 merge → 담당부서 포함
+    # VIEW_TABLE.거래처코드 == CUSTOMER_MASTER.거래처분류(B열)
+    cust_cols = ["거래처분류", "수수료율", "국내여부", "담당부서"]
+    cust_cols = [c for c in cust_cols if c in cust_df.columns]
+    merged = merged.merge(
+        cust_df[cust_cols].drop_duplicates("거래처분류"),
+        on="거래처분류", how="left"
+    )
     merged["수수료율"] = merged["수수료율"].fillna(0)
     merged["국내여부"] = merged["국내여부"].fillna("국내")
+    merged["담당부서"] = merged["담당부서"].fillna("").astype(str).str.strip()
     merged["거래처분류"] = merged["거래처분류"].replace("", np.nan).fillna(merged["거래처코드"])
+    # [추가] 시간 컬럼 확장 (출고일자 → 연도/월/주차, 출고년월 유지)
+    merged["출고일자"] = pd.to_datetime(merged["출고일자"], errors="coerce")
+    merged["연도"] = merged["출고일자"].dt.year
+    merged["월"]   = merged["출고일자"].dt.month
+    merged["주차"] = merged["출고일자"].dt.isocalendar().week.astype("Int64")
+    # 출고년월 유지 (기존 컬럼 덮어쓰지 않음 — 이미 load_view_table에서 생성됨)
     def get_cost(row):
         try:
             prev_ym = (pd.to_datetime(row["출고년월"] + "-01") - relativedelta(months=1)).strftime("%Y-%m")
@@ -681,6 +724,37 @@ def build_dataset():
 df     = build_dataset()
 client = get_gspread_client()
 sh     = client.open_by_key(SHEET_ID)
+
+# -----------------------------------
+# [v7.0] AUTH_MASTER 기반 권한 필터링
+# load_auth_master()는 (df, email_col, dept_col) 튜플 반환
+# "관리자" → 전체 데이터 / 그 외 → 담당부서 일치 데이터만
+# -----------------------------------
+_current_email = st.session_state.get("email", "").strip().lower()
+
+try:
+    _auth_df, _email_col, _dept_col = load_auth_master()
+    if _email_col is None or _dept_col is None:
+        st.error("🚫 AUTH_MASTER 컬럼 구조를 인식할 수 없습니다. (e-mail / 담당부서 컬럼 확인 필요)")
+        st.stop()
+    _user_row = _auth_df[_auth_df[_email_col] == _current_email]
+    if _user_row.empty:
+        st.error("🚫 접근 권한이 없습니다. 관리자에게 담당부서 권한을 요청하세요.")
+        st.stop()
+    _user_dept = str(_user_row.iloc[0][_dept_col]).strip()
+    # 담당부서 미지정 시 접근 불가
+    if not _user_dept or _user_dept in ("nan", ""):
+        st.error("🚫 접근 권한이 없습니다. 담당부서가 지정되지 않았습니다.")
+        st.stop()
+    # "관리자" → 전체 데이터 (필터 없음), 그 외 → 담당부서 완전 일치 필터
+    if _user_dept != "관리자":
+        df = df[df["담당부서"] == _user_dept].copy()
+    # "관리자"는 df 그대로 유지
+except Exception as _e:
+    import traceback
+    st.error(f"🚫 권한 확인 중 오류가 발생했습니다: {_e}")
+    st.code(traceback.format_exc())   # 정확한 줄번호/원인 화면 출력
+    st.stop()
 
 if "logistics_table" not in st.session_state:
     logistics_dict, ad_dict = load_cost_input(sh)
@@ -1280,7 +1354,7 @@ if "다운로드" in tab_map:
         st.download_button(
             label="📥 분석 결과 통합 엑셀 다운로드",
             data=download_file,
-            file_name="Lingtea_Dashboard_v6.0.xlsx",
+            file_name="Lingtea_Dashboard_v7.0.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
         st.markdown("### 포함 시트")
@@ -1405,4 +1479,4 @@ if st.session_state["role"] == "admin":
                         st.success(f"{email} 계정이 삭제되었습니다.")
                         st.rerun()
 
-st.success("🚀 Lingtea Dashboard v6.0 Ready")
+st.success("🚀 Lingtea Dashboard v7.0 Ready")
