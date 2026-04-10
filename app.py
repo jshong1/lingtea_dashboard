@@ -497,6 +497,17 @@ def get_gspread_client():
     )
     return gspread.authorize(creds)
 
+# [신규] 쓰기 권한 포함 gspread 클라이언트 (AUTH_MASTER 업데이트용)
+def get_gspread_client_rw():
+    scope = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds = Credentials.from_service_account_info(
+        dict(st.secrets["gcp_service_account"]), scopes=scope
+    )
+    return gspread.authorize(creds)
+
 def load_cost_input(sh):
     ws   = sh.worksheet("COST_INPUT")
     data = ws.get_all_values()
@@ -640,31 +651,45 @@ def load_master():
     cust_df["담당부서"] = cust_df["담당부서"].astype(str).str.strip()
     return item_df, cust_df
 
+# [수정] AUTH_MASTER 컬럼 구조 확장: 권한유형(C) / 품목군(D) 신규 탐색
+# 반환값: (auth_df, email_col, dept_col, role_type_col, item_group_col) 5-tuple
+# [수정] ttl=60 짧은 캐시 적용 — 429 Quota 초과 방지 (저장 후 .clear() 호출)
+@st.cache_data(ttl=60)
 def load_auth_master():
     """AUTH_MASTER 시트 로드. 캐시 없음 (캐시 오염 방지).
-    컬럼 구조: e-mail(A) | 담당부서(B) | 비고(C) — 3컬럼 고정.
-    컬럼명 재지정 금지. 헤더는 리스트 컴프리헨션으로 strip만 적용.
-    반환값: (auth_df, email_col, dept_col) 튜플."""
+    컬럼 구조: e-mail(A) | 담당부서(B) | 권한유형(C) | 품목군(D) | 비고(E)
+    반환값: (auth_df, email_col, dept_col, role_type_col, item_group_col) 튜플."""
     client = get_gspread_client()
     ws   = client.open_by_key(SHEET_ID).worksheet("AUTH_MASTER")
     data = ws.get_all_values()
     if not data or len(data) < 1:
-        return pd.DataFrame(), None, None
+        return pd.DataFrame(), None, None, None, None
     # 헤더: 리스트 컴프리헨션으로 strip — Index.str / DataFrame.str 일절 사용 안 함
     raw_headers = [str(h).strip() for h in data[0]]
     rows        = data[1:]
     auth_df = pd.DataFrame(rows, columns=raw_headers).copy()
     # 컬럼명 탐색: 'e-mail' 또는 'email' 허용, '담당부서' 포함
-    email_col = next((c for c in raw_headers if c.lower().replace("-", "") == "email"), None)
-    dept_col  = next((c for c in raw_headers if "담당부서" in c), None)
+    email_col      = next((c for c in raw_headers if c.lower().replace("-", "") == "email"), None)
+    dept_col       = next((c for c in raw_headers if "담당부서" in c), None)
+    # [신규] 권한유형 / 품목군 컬럼 탐색
+    role_type_col  = next((c for c in raw_headers if "권한유형" in c), None)
+    item_group_col = next((c for c in raw_headers if "품목군"   in c), None)
+
     if email_col is None or dept_col is None:
-        return auth_df, None, None
+        return auth_df, None, None, None, None
+
     # 중복 컬럼 제거: 같은 이름 컬럼이 2개 이상이면 첫 번째만 유지
     auth_df = auth_df.loc[:, ~auth_df.columns.duplicated()].copy()
     # 값 정규화 (컬럼명 변경 없음, Series 단일 접근 보장)
     auth_df[email_col] = auth_df[email_col].astype(str).str.strip().str.lower()
     auth_df[dept_col]  = auth_df[dept_col].astype(str).str.strip()
-    return auth_df, email_col, dept_col
+    # [신규] 권한유형 / 품목군 정규화
+    if role_type_col:
+        auth_df[role_type_col]  = auth_df[role_type_col].astype(str).str.strip()
+    if item_group_col:
+        auth_df[item_group_col] = auth_df[item_group_col].astype(str).str.strip()
+
+    return auth_df, email_col, dept_col, role_type_col, item_group_col
 
 @st.cache_data(ttl=600)
 def build_dataset():
@@ -712,30 +737,67 @@ client = get_gspread_client()
 sh     = client.open_by_key(SHEET_ID)
 
 # -----------------------------------
-# [v7.0] AUTH_MASTER 기반 권한 필터링
-# load_auth_master()는 (df, email_col, dept_col) 튜플 반환
-# "관리자" → 전체 데이터 / 그 외 → 담당부서 일치 데이터만
+# [v7.3] AUTH_MASTER 기반 권한 필터링
+# 권한유형: 관리자 / 부서기반 / PM
+# 관리자  → 전체 데이터 (필터 없음)
+# 부서기반 → 담당부서 일치 데이터만
+# PM      → 품목군 기준 필터 (모든 채널 조회 가능)
 # -----------------------------------
 _current_email = st.session_state.get("email", "").strip().lower()
 
 try:
-    _auth_df, _email_col, _dept_col = load_auth_master()
+    # [수정] load_auth_master 반환값 5개로 변경
+    _auth_df, _email_col, _dept_col, _role_type_col, _item_group_col = load_auth_master()
+
     if _email_col is None or _dept_col is None:
         st.error("🚫 AUTH_MASTER 컬럼 구조를 인식할 수 없습니다. (e-mail / 담당부서 컬럼 확인 필요)")
         st.stop()
+
     _user_row = _auth_df[_auth_df[_email_col] == _current_email]
     if _user_row.empty:
         st.error("🚫 접근 권한이 없습니다. 관리자에게 담당부서 권한을 요청하세요.")
         st.stop()
-    _user_dept = str(_user_row.iloc[0][_dept_col]).strip()
-    # 담당부서 미지정 시 접근 불가
+
+    _row0      = _user_row.iloc[0]
+    _user_dept = str(_row0[_dept_col]).strip()
+
     if not _user_dept or _user_dept in ("nan", ""):
         st.error("🚫 접근 권한이 없습니다. 담당부서가 지정되지 않았습니다.")
         st.stop()
-    # "관리자" → 전체 데이터 (필터 없음), 그 외 → 담당부서 완전 일치 필터
-    if _user_dept != "관리자":
+
+    # [신규] 권한유형 읽기 — 컬럼 없으면 담당부서 값으로 하위 호환
+    # (기존 "관리자" 담당부서 로직 유지)
+    _role_type = str(_row0[_role_type_col]).strip() if _role_type_col else (
+        "관리자" if _user_dept == "관리자" else "부서기반"
+    )
+
+    # [신규] 품목군 읽기 — 쉼표 구분 split, 공백 제거
+    _item_group_raw = str(_row0[_item_group_col]).strip() if _item_group_col else "ALL"
+    _user_items = [x.strip() for x in _item_group_raw.split(",") if x.strip()]
+
+    # [신규] 권한유형 기반 3-way 필터링
+    if _role_type == "관리자":
+        pass  # 전체 데이터 (필터 없음)
+
+    elif _role_type == "부서기반":
+        # 자신의 담당부서 데이터만 조회
         df = df[df["담당부서"] == _user_dept].copy()
-    # "관리자"는 df 그대로 유지
+
+    elif _role_type == "PM":
+        # 모든 채널 조회 가능, 품목군 기준 필터
+        if "ALL" not in _user_items:
+            df = df[df["품목군"].isin(_user_items)].copy()
+
+    else:
+        # 알 수 없는 권한유형 → 안전하게 차단
+        st.error(f"🚫 알 수 없는 권한유형입니다: {_role_type}")
+        st.stop()
+
+    # 세션에 저장 (관리자 UI 등에서 활용)
+    st.session_state["user_role_type"] = _role_type
+    st.session_state["user_dept"]      = _user_dept
+    st.session_state["user_items"]     = _user_items
+
 except Exception as _e:
     import traceback
     st.error(f"🚫 권한 확인 중 오류가 발생했습니다: {_e}")
@@ -1367,7 +1429,7 @@ if "다운로드" in tab_map:
         st.download_button(
             label="📥 분석 결과 통합 엑셀 다운로드",
             data=download_file,
-            file_name="Lingtea_Dashboard_v7.0.xlsx",
+            file_name="Lingtea_Dashboard_v7.3.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
         st.markdown("### 포함 시트")
@@ -1425,6 +1487,50 @@ if st.session_state["role"] == "admin":
             all_users = get_all_users()
             admin_emails_list = list(st.secrets["auth"]["admin_emails"])
 
+            # [신규] ITEM_MASTER에서 품목군 목록 로드 (관리자 UI용)
+            @st.cache_data(ttl=600)
+            def load_item_group_list():
+                _client  = get_gspread_client()
+                _ws      = _client.open_by_key(SHEET_ID).worksheet("ITEM_MASTER")
+                _data    = _ws.get_all_values()
+                if not _data or len(_data) < 2:
+                    return []
+                _headers = [str(h).strip() for h in _data[0]]
+                _df      = pd.DataFrame(_data[1:], columns=_headers)
+                _col     = next((c for c in _headers if "품목군" in c), None)
+                if _col is None:
+                    return []
+                return sorted(_df[_col].dropna().astype(str).str.strip().unique().tolist())
+
+            _item_group_options = load_item_group_list()
+
+            # [신규] AUTH_MASTER 행 업데이트 함수 (권한유형 + 품목군 저장)
+            def update_auth_master_row(target_email: str, role_type: str, item_groups: list):
+                """AUTH_MASTER에서 해당 이메일 행의 권한유형/품목군 컬럼을 업데이트."""
+                _client  = get_gspread_client_rw()
+                _ws      = _client.open_by_key(SHEET_ID).worksheet("AUTH_MASTER")
+                _data    = _ws.get_all_values()
+                if not _data:
+                    return False
+                _headers       = [str(h).strip() for h in _data[0]]
+                # 컬럼 인덱스 탐색 (1-based for gspread update_cell)
+                _email_idx     = next((i+1 for i, h in enumerate(_headers) if h.lower().replace("-","") == "email"), None)
+                _role_type_idx = next((i+1 for i, h in enumerate(_headers) if "권한유형" in h), None)
+                _item_idx      = next((i+1 for i, h in enumerate(_headers) if "품목군"   in h), None)
+                if not all([_email_idx, _role_type_idx, _item_idx]):
+                    return False
+                # 행 탐색 후 업데이트
+                for row_idx, row in enumerate(_data[1:], start=2):
+                    if str(row[_email_idx-1]).strip().lower() == target_email.strip().lower():
+                        _ws.update_cell(row_idx, _role_type_idx, role_type)
+                        _ws.update_cell(row_idx, _item_idx, ",".join(item_groups))
+                        return True
+                return False
+
+            # [핵심 수정] AUTH_MASTER를 루프 밖에서 1회만 로드 — 429 Quota 방지
+            _auth_df_adm, _ec, _dc, _rtc, _igc = load_auth_master()
+
+            # ── 유저별 렌더링 ──
             for user in all_users:
                 uid   = user["uid"]
                 email = user.get("email", uid)
@@ -1451,6 +1557,63 @@ if st.session_state["role"] == "admin":
                             update_user_tabs(uid, DEFAULT_ADMIN_TABS.copy())
                         st.success(f"{email} 역할이 {new_role}(으)로 변경되었습니다.")
                         st.rerun()
+
+                # [수정] expander 내부에서 load_auth_master() 재호출 제거
+                # 루프 밖에서 받아온 _auth_df_adm 재사용 → API 호출 1회로 고정
+                with st.expander(f"🔐 {email} — AUTH_MASTER 권한 설정", expanded=False):
+                    _row_adm = (
+                        _auth_df_adm[_auth_df_adm[_ec] == email.lower()]
+                        if _ec else pd.DataFrame()
+                    )
+
+                    _cur_role_type   = "부서기반"
+                    _cur_item_groups = []
+                    if not _row_adm.empty and _rtc:
+                        _cur_role_type = str(_row_adm.iloc[0][_rtc]).strip()
+                    if not _row_adm.empty and _igc:
+                        _raw_ig = str(_row_adm.iloc[0][_igc]).strip()
+                        # ALL은 multiselect에서 제외 (저장 시 자동 처리)
+                        _cur_item_groups = [
+                            x.strip() for x in _raw_ig.split(",")
+                            if x.strip() and x.strip() != "ALL"
+                        ]
+
+                    # (1) 권한유형 dropdown
+                    _new_role_type = st.selectbox(
+                        "권한유형",
+                        options=["관리자", "부서기반", "PM"],
+                        index=(
+                            ["관리자", "부서기반", "PM"].index(_cur_role_type)
+                            if _cur_role_type in ["관리자", "부서기반", "PM"] else 1
+                        ),
+                        key=f"auth_role_type_{uid}"
+                    )
+
+                    # (2) 품목군 multiselect — PM일 때만 의미 있음, 항상 표시
+                    _new_items = st.multiselect(
+                        "품목군 (PM 권한 시 적용 / 관리자·부서기반은 ALL로 자동 저장)",
+                        options=_item_group_options,
+                        default=[ig for ig in _cur_item_groups if ig in _item_group_options],
+                        key=f"auth_items_{uid}"
+                    )
+
+                    # (3) 저장 버튼 — 관리자/부서기반은 품목군을 ALL로 저장
+                    if st.button("💾 AUTH_MASTER 저장", key=f"save_auth_{uid}", use_container_width=True):
+                        _save_items = _new_items if _new_role_type == "PM" else ["ALL"]
+                        _ok = update_auth_master_row(email, _new_role_type, _save_items)
+                        if _ok:
+                            # 저장 후 캐시 무효화 → 다음 렌더링 시 최신값 반영
+                            load_auth_master.clear()
+                            st.success(
+                                f"✅ {email} 권한 저장 완료 "
+                                f"(권한유형: {_new_role_type} / 품목군: {','.join(_save_items)})"
+                            )
+                            st.rerun()
+                        else:
+                            st.error(
+                                "❌ 저장 실패. AUTH_MASTER에 해당 이메일 행이 없거나 "
+                                "권한유형/품목군 컬럼 구조를 확인하세요."
+                            )
 
         # ── 계정 관리 (비활성화 / 삭제) ──
         with admin_sub[2]:
@@ -1493,7 +1656,7 @@ if st.session_state["role"] == "admin":
                         st.rerun()
 
 # ===================================
-# TAB 6: 제품별 원가
+# TAB 7: 제품별 원가
 # ===================================
 if "제품별원가" in tab_map:
     with tab_map["제품별원가"]:
@@ -1574,4 +1737,4 @@ if "제품별원가" in tab_map:
                     height=500
                 )
 
-st.success("🚀 Lingtea Dashboard v7.2 Ready")
+st.success("🚀 Lingtea Dashboard v7.3 Ready")
