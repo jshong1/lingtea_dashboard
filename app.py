@@ -21,7 +21,7 @@ st.set_page_config(page_title="Lingtea Dashboard", layout="wide")
 
 SHEET_ID = "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
 
-ALL_TABS = ["월별추이", "채널분석", "제품분석", "공헌이익분석", "제품별원가", "다운로드"]
+ALL_TABS = ["월별추이", "주차별추이", "채널분석", "제품분석", "공헌이익분석", "제품별원가", "다운로드"]
 
 DEFAULT_USER_TABS = {t: False for t in ALL_TABS}
 DEFAULT_ADMIN_TABS = {t: True for t in ALL_TABS}
@@ -909,6 +909,7 @@ filtered_df["공헌이익률"] = safe_divide(filtered_df["공헌이익"], filter
 # -----------------------------------
 tab_defs = {
     "월별추이":    "📈 월별 추이",
+    "주차별추이":  "📅 주차별 추이",
     "채널분석":    "🏪 채널 분석",
     "제품분석":    "📦 제품 분석",
     "공헌이익분석": "📊 공헌이익 분석",
@@ -1010,7 +1011,7 @@ if "월별추이" in tab_map:
             show_label = st.checkbox("📊 라벨 표시", value=True)
         with ctrl2:
             if has_26_data:
-                show_prev_year = st.checkbox("📅 전년 동월 비교 표시", value=True)
+                show_prev_year = st.checkbox("📅 전년 동월 비교 표시", value=False)
             else:
                 show_prev_year = False
 
@@ -1083,7 +1084,149 @@ if "월별추이" in tab_map:
         st.plotly_chart(fig_qty, use_container_width=True)
 
 # ===================================
-# TAB 2: 채널 분석
+# TAB 2: 주차별 추이
+# ===================================
+if "주차별추이" in tab_map:
+    with tab_map["주차별추이"]:
+        st.subheader("📅 주차별 추이")
+
+        # 주차 컬럼 생성: YYYY-WNN 형태 (예: 2026-W03)
+        wdf = filtered_df.copy()
+        wdf = wdf.dropna(subset=["출고일자", "주차"])
+        wdf["연도"] = wdf["출고일자"].dt.isocalendar().year.astype(int)
+        wdf["주차_int"] = wdf["주차"].astype(int)
+        wdf["연도주차"] = wdf["연도"].astype(str) + "-W" + wdf["주차_int"].astype(str).str.zfill(2)
+
+        # 정렬 기준용 숫자키
+        wdf["연도주차_key"] = wdf["연도"] * 100 + wdf["주차_int"]
+
+        weekly = (
+            wdf.groupby(["연도주차", "연도주차_key"], as_index=False)[
+                ["품목별매출(VAT제외)", "매출총이익", "총내품출고수량"]
+            ].sum()
+        )
+        weekly = weekly.sort_values("연도주차_key").rename(columns={
+            "품목별매출(VAT제외)": "매출액",
+            "총내품출고수량": "출고량",
+        })
+
+        if weekly.empty:
+            st.info("선택한 기간에 주차 데이터가 없습니다.")
+        else:
+            wk_ctrl1, wk_ctrl2 = st.columns([1, 1])
+            with wk_ctrl1:
+                wk_show_label = st.checkbox("📊 라벨 표시", value=True, key="wk_label")
+            with wk_ctrl2:
+                wk_top_n = st.selectbox(
+                    "최근 N주 표시 (종료일 기준)",
+                    options=[4, 8, 12, 16, 24, 52],
+                    index=1,          # 기본값: 8주
+                    key="wk_top_n"
+                )
+
+            # 종료일 기준 최근 N주: weekly는 이미 연도주차_key 오름차순 정렬됨
+            weekly_view = weekly.tail(wk_top_n).copy()
+
+            # ── 주차별 매출액 + 매출총이익 차트 ──
+            st.markdown("### 💰 주차별 매출액 / 매출총이익")
+            fig_wk = go.Figure()
+            fig_wk.add_trace(go.Bar(
+                x=weekly_view["연도주차"],
+                y=weekly_view["매출액"],
+                name="매출액",
+                marker_color="#1f77b4",
+                text=weekly_view["매출액"] if wk_show_label else None,
+                texttemplate="%{text:,.0f}",
+                textposition="outside",
+                cliponaxis=False,
+            ))
+            fig_wk.add_trace(go.Scatter(
+                x=weekly_view["연도주차"],
+                y=weekly_view["매출총이익"],
+                name="매출총이익",
+                mode="lines+markers+text" if wk_show_label else "lines+markers",
+                line=dict(width=3, color="#EF4444"),
+                text=weekly_view["매출총이익"] if wk_show_label else None,
+                texttemplate="%{text:,.0f}",
+                textposition="top center",
+            ))
+            wk_y_max = max(weekly_view["매출액"].max(), weekly_view["매출총이익"].max()) * 1.3
+            fig_wk.update_layout(
+                height=420,
+                barmode="group",
+                yaxis=dict(range=[0, wk_y_max]),
+                legend=dict(orientation="h"),
+                margin=dict(t=40),
+                xaxis=dict(tickangle=-45),
+            )
+            fig_wk.update_traces(textfont=dict(size=11, color="black"))
+            st.plotly_chart(fig_wk, use_container_width=True)
+
+            # ── 주차별 출고량 차트 (매출액 차트와 동일 색상) ──
+            st.markdown("### 📦 주차별 출고량")
+            fig_wk_qty = go.Figure()
+            fig_wk_qty.add_trace(go.Bar(
+                x=weekly_view["연도주차"],
+                y=weekly_view["출고량"],
+                name="출고량",
+                marker_color="#1f77b4",   # 매출액 차트와 동일 색상
+                text=weekly_view["출고량"] if wk_show_label else None,
+                texttemplate="%{text:,.0f}",
+                textposition="outside",
+                cliponaxis=False,
+            ))
+            fig_wk_qty.update_layout(
+                height=380,
+                yaxis=dict(range=[0, weekly_view["출고량"].max() * 1.3]),
+                margin=dict(t=40),
+                xaxis=dict(tickangle=-45),
+            )
+            fig_wk_qty.update_traces(textfont=dict(size=11, color="black"))
+            st.plotly_chart(fig_wk_qty, use_container_width=True)
+
+            # ── 채널별 주차 매출 히트맵 (expander로 열고 닫기) ──
+            with st.expander("🗂️ 채널별 주차 매출 히트맵", expanded=False):
+                wk_ch_pivot = wdf.copy()
+                wk_ch_pivot = wk_ch_pivot[wk_ch_pivot["연도주차"].isin(weekly_view["연도주차"])]
+                wk_ch_pivot = wk_ch_pivot.groupby(["거래처분류", "연도주차", "연도주차_key"])["품목별매출(VAT제외)"].sum().reset_index()
+                wk_ch_pivot = wk_ch_pivot.pivot_table(
+                    index="거래처분류", columns="연도주차", values="품목별매출(VAT제외)", aggfunc="sum", fill_value=0
+                )
+                sorted_weeks = weekly_view["연도주차"].tolist()
+                wk_ch_pivot = wk_ch_pivot.reindex(columns=sorted_weeks, fill_value=0)
+                wk_ch_pivot["_total"] = wk_ch_pivot.sum(axis=1)
+                wk_ch_pivot = wk_ch_pivot.sort_values("_total", ascending=False).drop(columns="_total").head(15)
+
+                fig_heat = px.imshow(
+                    wk_ch_pivot,
+                    color_continuous_scale="Blues",
+                    aspect="auto",
+                    text_auto=True,
+                    labels=dict(x="주차", y="채널", color="매출액"),
+                )
+                fig_heat.update_traces(texttemplate="%{z:,.0f}", textfont=dict(size=10))
+                fig_heat.update_layout(height=420, margin=dict(t=30), xaxis=dict(tickangle=-45))
+                st.plotly_chart(fig_heat, use_container_width=True)
+
+            # ── 주차별 상세 테이블 ──
+            with st.expander("📋 주차별 상세 데이터", expanded=False):
+                wk_table = weekly_view[["연도주차", "매출액", "매출총이익", "출고량"]].copy()
+                wk_table["매출총이익률"] = safe_divide(wk_table["매출총이익"], wk_table["매출액"]) * 100
+                wk_table["매출액_WoW"] = wk_table["매출액"].pct_change() * 100
+                wk_table = wk_table.rename(columns={"연도주차": "주차"})
+                st.dataframe(
+                    wk_table.style.format({
+                        "매출액": "{:,.0f}",
+                        "매출총이익": "{:,.0f}",
+                        "출고량": "{:,.0f}",
+                        "매출총이익률": "{:.1f}%",
+                        "매출액_WoW": "{:+.1f}%",
+                    }),
+                    use_container_width=True,
+                )
+
+# ===================================
+# TAB 3: 채널 분석
 # ===================================
 if "채널분석" in tab_map:
     with tab_map["채널분석"]:
@@ -1737,4 +1880,4 @@ if "제품별원가" in tab_map:
                     height=500
                 )
 
-st.success("🚀 Lingtea Dashboard v7.3 Ready")
+st.success("🚀 Lingtea Dashboard v7.4 Ready")
