@@ -483,7 +483,7 @@ with st.sidebar:
         # 쿠키 삭제
         st.query_params.clear()
         for k in ["logged_in", "uid", "email", "role", "id_token", "tabs_perm",
-                  "logistics_table", "ad_cost_monthly", "channel_cost"]:
+                  "logistics_table", "ad_cost_monthly", "channel_cost", "channel_dept_map"]:
             st.session_state.pop(k, None)
         st.rerun()
 
@@ -509,32 +509,83 @@ def get_gspread_client_rw():
     return gspread.authorize(creds)
 
 def load_cost_input(sh):
+    """COST_INPUT 시트 로드.
+    구조:
+      1행: '부서별 물류비' | 2026-01 | 2026-02 | ...
+      2행~(빈행 전): 부서명 | 금액 | 금액 | ...
+      (빈행)
+      광고비 헤더행: '광고비' | 2026-01 | ...
+      이후행: 제품명 | 금액 | ...
+
+    반환:
+      logistics_dict: { (부서명, 년월): 금액 }   ← 부서별 물류비
+      ad_dict:        { (품목군, 년월): 금액 }    ← 제품명→품목군 변환 후 합산
+    """
     ws   = sh.worksheet("COST_INPUT")
     data = ws.get_all_values()
-    if len(data) < 3:
+    if len(data) < 2:
         return {}, {}
-    months = data[0][1:]
-    logistics_dict = {}
-    for i, m in enumerate(months):
-        val = str(data[1][i + 1]).replace(",", "").strip()
-        try:
-            logistics_dict[m] = float(val) if val else 0
-        except:
-            logistics_dict[m] = 0
-    ad_dict = {}
-    for row in data[4:]:
-        category = str(row[0]).strip()
-        if not category:
+
+    # 1행에서 월 헤더 추출 (B열부터)
+    months = [str(m).strip() for m in data[0][1:]]
+
+    logistics_dict  = {}
+    ad_section      = False
+    ad_months       = months
+    ad_dict_by_prod = {}   # 임시: { (제품명, 년월): 금액 }
+
+    for row in data[1:]:
+        label = str(row[0]).strip()
+
+        # 빈 행 — 섹션 구분용, 스킵
+        if not label:
             continue
-        for i, m in enumerate(months):
-            val = str(row[i + 1]).replace(",", "").strip()
-            try:
-                ad_dict[(category, m)] = float(val) if val and val.lower() != "nan" else 0
-            except:
-                ad_dict[(category, m)] = 0
+
+        # 광고비 헤더 행 감지 ("광고비" 포함)
+        if "광고비" in label:
+            ad_section = True
+            ad_months  = [str(m).strip() for m in row[1:]]
+            continue
+
+        if ad_section:
+            # 광고비 섹션: 제품명 기준으로 임시 저장
+            for i, m in enumerate(ad_months):
+                if i + 1 >= len(row):
+                    break
+                val = str(row[i + 1]).replace(",", "").strip()
+                try:
+                    ad_dict_by_prod[(label, m)] = float(val) if val and val.lower() not in ("", "nan") else 0
+                except:
+                    ad_dict_by_prod[(label, m)] = 0
+        else:
+            # 물류비 섹션: { (부서명, 년월): 금액 }
+            for i, m in enumerate(months):
+                if i + 1 >= len(row):
+                    break
+                val = str(row[i + 1]).replace(",", "").strip()
+                try:
+                    logistics_dict[(label, m)] = float(val) if val and val.lower() not in ("", "nan") else 0
+                except:
+                    logistics_dict[(label, m)] = 0
+
+    # A열 값이 이미 품목군명 — ITEM_MASTER 변환 불필요
+    # { (품목군, 년월): 금액 } 으로 직접 저장
+    ad_dict = {}
+    for (prod, m), amt in ad_dict_by_prod.items():
+        if not prod or prod in ("nan", ""):
+            continue
+        key = (prod, m)
+        ad_dict[key] = ad_dict.get(key, 0) + amt
+
     return logistics_dict, ad_dict
 
+
 def load_channel_cost(sh):
+    """CHANNEL_COST 시트 로드.
+    컬럼: 년월(A) | 거래처명(B) | 품목군(C) | 비용항목(D) | 금액(E)
+    반환: { (년월, 거래처명, 품목군): 금액 }  ← 기존과 동일 키 구조 유지
+    (담당부서 매핑은 공헌이익 계산 시점에 cust_df로 처리)
+    """
     try:
         ws   = sh.worksheet("CHANNEL_COST")
         data = ws.get_all_values()
@@ -727,6 +778,13 @@ def build_dataset():
     merged["채널수수료"] = merged["품목별매출(VAT제외)"] * merged["수수료율"]
     merged["매출총이익"]  = merged["품목별매출(VAT제외)"] - merged["원가총액"]
     merged["매출총이익률"] = safe_divide(merged["매출총이익"], merged["품목별매출(VAT제외)"])
+    # [수정] 품목군 NaN·공란·"nan" 행 제외 — 판촉물·원재료 등 비정상 품목
+    # 광고비·물류비 분모 오염 방지 및 공헌이익 집계 제외
+    merged = merged[
+        merged["품목군"].notna() &
+        (merged["품목군"].astype(str).str.strip() != "") &
+        (merged["품목군"].astype(str).str.strip() != "nan")
+    ].copy()
     return merged
 
 # -----------------------------------
@@ -804,13 +862,28 @@ except Exception as _e:
     st.code(traceback.format_exc())   # 정확한 줄번호/원인 화면 출력
     st.stop()
 
-if "logistics_table" not in st.session_state:
+if "logistics_table" not in st.session_state or not st.session_state.get("ad_cost_monthly"):
     logistics_dict, ad_dict = load_cost_input(sh)
     st.session_state["logistics_table"] = logistics_dict
     st.session_state["ad_cost_monthly"] = ad_dict
 
 if "channel_cost" not in st.session_state:
     st.session_state["channel_cost"] = load_channel_cost(sh)
+
+# [신규] 거래처명 → 담당부서 매핑 (CHANNEL_COST 부서별 배분용)
+# CUSTOMER_MASTER의 거래처명(거래처분류) → 담당부서 딕셔너리
+if "channel_dept_map" not in st.session_state:
+    _, _cust_df = load_master()
+    # 거래처분류(=거래처명 키)와 담당부서 컬럼으로 매핑 생성
+    # 거래처분류가 CHANNEL_COST.거래처명과 동일한 값이어야 함
+    _ch_dept = (
+        _cust_df[["거래처분류", "담당부서"]]
+        .dropna(subset=["거래처분류"])
+        .drop_duplicates("거래처분류")
+    )
+    st.session_state["channel_dept_map"] = dict(
+        zip(_ch_dept["거래처분류"].str.strip(), _ch_dept["담당부서"].str.strip())
+    )
 
 # -----------------------------------
 # 권한 체크 헬퍼
@@ -876,18 +949,44 @@ filtered_df["광고비"] = 0.0
 
 for m in selected_months:
     month_mask = filtered_df["출고년월"] == m
-    dom_mask_all = (df["출고년월"] == m) & (df["국내여부"] == "국내")
-    dom_total    = df.loc[dom_mask_all, "품목별매출(VAT제외)"].sum()
-    if dom_total > 0:
-        dom_month_mask = month_mask & (filtered_df["국내여부"] == "국내")
-        ratio = filtered_df.loc[dom_month_mask, "품목별매출(VAT제외)"] / dom_total
-        filtered_df.loc[dom_month_mask, "물류비"] = ratio * st.session_state["logistics_table"].get(m, 0)
-    month_total_ad = sum(v for (cat, mon), v in st.session_state["ad_cost_monthly"].items() if mon == m)
-    if month_total_ad > 0:
-        month_total_sales = filtered_df.loc[month_mask, "품목별매출(VAT제외)"].sum()
-        if month_total_sales > 0:
-            ratio = filtered_df.loc[month_mask, "품목별매출(VAT제외)"] / month_total_sales
-            filtered_df.loc[month_mask, "광고비"] = ratio * month_total_ad
+
+    # [수정] 물류비: 부서별 배분
+    # logistics_table 키: (부서명, 년월) → 금액
+    _depts_this_month = set(
+        dept for (dept, ym) in st.session_state["logistics_table"].keys() if ym == m
+    )
+    for dept in _depts_this_month:
+        dept_logistics_amt = st.session_state["logistics_table"].get((dept, m), 0)
+        if dept_logistics_amt <= 0:
+            continue
+        # 해당 부서 전체 매출 (df 기준, 필터 전)
+        dept_total_mask = (df["출고년월"] == m) & (df["담당부서"] == dept)
+        dept_total_sales = df.loc[dept_total_mask, "품목별매출(VAT제외)"].sum()
+        if dept_total_sales <= 0:
+            continue
+        # filtered_df 내 해당 부서 행에만 비율 배분
+        f_dept_mask = month_mask & (filtered_df["담당부서"] == dept)
+        ratio = filtered_df.loc[f_dept_mask, "품목별매출(VAT제외)"] / dept_total_sales
+        filtered_df.loc[f_dept_mask, "물류비"] = ratio * dept_logistics_amt
+
+    # [수정] 광고비: 품목군 기준 + 국내 채널만 배분 (해외 채널 제외)
+    # ad_cost_monthly 키: (품목군, 년월) → 금액
+    _igs_this_month = set(
+        ig for (ig, ym) in st.session_state["ad_cost_monthly"].keys() if ym == m
+    )
+    for ig in _igs_this_month:
+        ad_amt = st.session_state["ad_cost_monthly"].get((ig, m), 0)
+        if ad_amt <= 0:
+            continue
+        # 분모: 해당 품목군 국내 채널 매출만 (df 기준, 필터 전)
+        ig_total_mask  = (df["출고년월"] == m) & (df["품목군"] == ig) & (df["국내여부"] == "국내")
+        ig_total_sales = df.loc[ig_total_mask, "품목별매출(VAT제외)"].sum()
+        if ig_total_sales <= 0:
+            continue
+        # 배분 대상: filtered_df 내 해당 품목군 + 국내 행만
+        f_ig_mask = month_mask & (filtered_df["품목군"] == ig) & (filtered_df["국내여부"] == "국내")
+        ratio = filtered_df.loc[f_ig_mask, "품목별매출(VAT제외)"] / ig_total_sales
+        filtered_df.loc[f_ig_mask, "광고비"] = ratio * ad_amt
 
 if filtered_df.empty:
     st.warning("선택한 조건에 해당하는 데이터가 없습니다.")
@@ -1412,30 +1511,49 @@ if "공헌이익분석" in tab_map:
         st.subheader("📊 공헌이익 분석")
         st.caption("※ 물류비 / 광고비는 COST_INPUT 시트에서 수정됩니다")
 
-        st.markdown("### 🚚 월별 물류비")
-        logistics_df = pd.DataFrame(
-            [{m: st.session_state["logistics_table"].get(m, 0) for m in all_months}],
-            index=["월별 물류비"]
-        )
-        st.dataframe(logistics_df.style.format("{:,.0f}"), use_container_width=True)
+        st.markdown("### 🚚 부서별 월별 물류비")
+        # logistics_table 키: (부서명, 년월) → 부서×월 피벗으로 표시
+        _lt = st.session_state["logistics_table"]
+        if _lt:
+            _depts_all = sorted(set(dept for (dept, ym) in _lt.keys()))
+            _logistics_rows = []
+            for dept in _depts_all:
+                row = {"부서": dept}
+                for m in all_months:
+                    row[m] = _lt.get((dept, m), 0)
+                _logistics_rows.append(row)
+            _logistics_display = pd.DataFrame(_logistics_rows).set_index("부서")
+            st.dataframe(_logistics_display.style.format("{:,.0f}"), use_container_width=True)
+        else:
+            st.info("COST_INPUT 시트에 물류비 데이터가 없습니다.")
 
-        st.markdown("### 📢 제품 광고비")
+        st.markdown("### 📢 품목군별 광고비")
         ad_data  = []
-        products = sorted(set(k[0] for k in st.session_state["ad_cost_monthly"].keys()))
-        for p in products:
-            row = {"제품명": p}
+        # ad_cost_monthly 키: (품목군, 년월)
+        item_groups_ad = sorted(set(k[0] for k in st.session_state["ad_cost_monthly"].keys()))
+        for ig in item_groups_ad:
+            row = {"품목군": ig}
             for m in all_months:
-                row[m] = st.session_state["ad_cost_monthly"].get((p, m), 0)
+                row[m] = st.session_state["ad_cost_monthly"].get((ig, m), 0)
             ad_data.append(row)
         ad_df = pd.DataFrame(ad_data)
-        ad_mcols = [c for c in ad_df.columns if c != "제품명"]
+        ad_mcols = [c for c in ad_df.columns if c != "품목군"]
         st.dataframe(ad_df.style.format({m: "{:,.0f}" for m in ad_mcols}), use_container_width=True)
 
         st.markdown("### 💸 채널별 후정산 비용")
         if st.session_state["channel_cost"]:
-            cc_rows = [{"년월": ym, "거래처명": ch, "품목군": ig, "비용(VAT-)": amt}
-                       for (ym, ch, ig), amt in st.session_state["channel_cost"].items()]
-            cc_df = pd.DataFrame(cc_rows).sort_values(["년월", "거래처명", "품목군"])
+            _ch_dept_map_disp = st.session_state.get("channel_dept_map", {})
+            cc_rows = [
+                {
+                    "년월": ym,
+                    "거래처명": ch,
+                    "담당부서": _ch_dept_map_disp.get(ch, "-"),
+                    "품목군": ig,
+                    "비용(VAT-)": amt,
+                }
+                for (ym, ch, ig), amt in st.session_state["channel_cost"].items()
+            ]
+            cc_df = pd.DataFrame(cc_rows).sort_values(["년월", "담당부서", "거래처명", "품목군"])
             st.dataframe(cc_df.style.format({"비용(VAT-)": "{:,.0f}"}), use_container_width=True)
         else:
             st.info("CHANNEL_COST 시트에 데이터가 없습니다.")
@@ -1443,22 +1561,41 @@ if "공헌이익분석" in tab_map:
         st.markdown("### 📦 품목군별 공헌이익")
         temp_df = df.copy()
         temp_df["물류비"] = 0.0
+
+        # [수정] 물류비: 부서별 배분 (temp_df = 전체 df 기준)
         for m in all_months:
-            mask = temp_df["출고년월"] == m
-            dom  = mask & (temp_df["국내여부"] == "국내")
-            dom_total = temp_df.loc[dom, "품목별매출(VAT제외)"].sum()
-            if dom_total > 0:
-                ratio = temp_df.loc[dom, "품목별매출(VAT제외)"] / dom_total
-                temp_df.loc[dom, "물류비"] = ratio * st.session_state["logistics_table"].get(m, 0)
+            _depts_m = set(
+                dept for (dept, ym) in st.session_state["logistics_table"].keys() if ym == m
+            )
+            for dept in _depts_m:
+                dept_logistics_amt = st.session_state["logistics_table"].get((dept, m), 0)
+                if dept_logistics_amt <= 0:
+                    continue
+                dept_total_mask  = (temp_df["출고년월"] == m) & (temp_df["담당부서"] == dept)
+                dept_total_sales = temp_df.loc[dept_total_mask, "품목별매출(VAT제외)"].sum()
+                if dept_total_sales <= 0:
+                    continue
+                ratio = temp_df.loc[dept_total_mask, "품목별매출(VAT제외)"] / dept_total_sales
+                temp_df.loc[dept_total_mask, "물류비"] = ratio * dept_logistics_amt
+
         temp_df["광고비"] = 0.0
         for m in all_months:
-            mask = temp_df["출고년월"] == m
-            month_total_ad = sum(v for (cat, mon), v in st.session_state["ad_cost_monthly"].items() if mon == m)
-            if month_total_ad > 0:
-                month_total_sales = temp_df.loc[mask, "품목별매출(VAT제외)"].sum()
-                if month_total_sales > 0:
-                    ratio = temp_df.loc[mask, "품목별매출(VAT제외)"] / month_total_sales
-                    temp_df.loc[mask, "광고비"] = ratio * month_total_ad
+            # [수정] 광고비: 품목군 기준 + 국내 채널만 배분 (해외 채널 제외)
+            _igs_m = set(
+                ig for (ig, ym) in st.session_state["ad_cost_monthly"].keys() if ym == m
+            )
+            for ig in _igs_m:
+                ad_amt = st.session_state["ad_cost_monthly"].get((ig, m), 0)
+                if ad_amt <= 0:
+                    continue
+                # 분모: 해당 품목군 국내 채널 매출만
+                ig_total_mask  = (temp_df["출고년월"] == m) & (temp_df["품목군"] == ig) & (temp_df["국내여부"] == "국내")
+                ig_total_sales = temp_df.loc[ig_total_mask, "품목별매출(VAT제외)"].sum()
+                if ig_total_sales <= 0:
+                    continue
+                # 배분 대상: 해당 품목군 + 국내 행만
+                ratio = temp_df.loc[ig_total_mask, "품목별매출(VAT제외)"] / ig_total_sales
+                temp_df.loc[ig_total_mask, "광고비"] = ratio * ad_amt
 
         temp_df = temp_df[
             (temp_df["출고년월"].isin(selected_months)) &
@@ -1474,9 +1611,15 @@ if "공헌이익분석" in tab_map:
             ]].sum()
         )
         product_contrib["비용"] = 0.0
+
+        # [수정] CHANNEL_COST 비용: 거래처명 → 담당부서 매핑 후 부서별 배분
+        _ch_dept_map = st.session_state.get("channel_dept_map", {})
         for (ym, ch, ig), amt in st.session_state["channel_cost"].items():
             if ym not in selected_months or ch not in selected_channel_groups:
                 continue
+            # 해당 거래처의 담당부서 확인 — 매핑 없으면 ch 그대로(폴백)
+            _ch_dept = _ch_dept_map.get(ch, "")
+            # temp_df 내 해당 부서+품목군 매출 비율로 품목군별 배분
             mask = product_contrib["품목군"] == ig
             if mask.any():
                 product_contrib.loc[mask, "비용"] += amt
@@ -1514,9 +1657,11 @@ if "공헌이익분석" in tab_map:
                 ]].sum()
             )
             channel_contrib["비용"] = 0.0
+            _ch_dept_map2 = st.session_state.get("channel_dept_map", {})
             for (ym, ch, ig), amt in st.session_state["channel_cost"].items():
                 if ym not in selected_months:
                     continue
+                # 거래처명(ch)으로 직접 채널 행 찾기
                 mask = channel_contrib["거래처분류"] == ch
                 if mask.any():
                     channel_contrib.loc[mask, "비용"] += amt
@@ -1880,4 +2025,4 @@ if "제품별원가" in tab_map:
                     height=500
                 )
 
-st.success("🚀 Lingtea Dashboard v7.4 Ready")
+st.success("🚀 Lingtea Dashboard v8 Ready")
