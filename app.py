@@ -905,8 +905,11 @@ st.sidebar.header("📌 필터")
 _valid_dates = df["출고일자"].dropna()
 _min_date    = _valid_dates.min().date()
 _max_date    = _valid_dates.max().date()
+_today       = datetime.today().date()
+_today_clamped = min(_today, _max_date)  # 오늘이 데이터 최대일보다 크면 최대일로
 
 st.sidebar.markdown("**📅 기간 설정**")
+
 _date_start = st.sidebar.date_input("시작일", value=_min_date, min_value=_min_date, max_value=_max_date, key="date_start")
 _date_end   = st.sidebar.date_input("종료일", value=_max_date, min_value=_min_date, max_value=_max_date, key="date_end")
 
@@ -925,11 +928,79 @@ all_months = sort_month_cols(df["출고년월"].dropna().unique().tolist())
 _date_filtered_df  = df[(df["출고일자"] >= _date_start_dt) & (df["출고일자"] <= _date_end_dt)]
 selected_months    = sort_month_cols(_date_filtered_df["출고년월"].dropna().unique().tolist())
 
-all_channel_groups = sorted(df["거래처분류"].dropna().unique().tolist())
-all_items          = sorted(df["내품상품명"].dropna().unique().tolist())
+# -----------------------------------
+# 채널 필터 — 담당부서 → 채널 연동
+# -----------------------------------
+st.sidebar.markdown("**🏪 채널**")
 
-selected_channel_groups = st.sidebar.multiselect("채널", all_channel_groups, default=all_channel_groups)
-selected_items          = st.sidebar.multiselect("품목", all_items,          default=all_items)
+_all_depts = sorted(df["담당부서"].dropna().replace("", None).dropna().unique().tolist())
+
+# 담당부서: 빈칸으로 시작
+selected_depts = st.sidebar.multiselect(
+    "담당부서",
+    options=_all_depts,
+    default=[],
+    key="filter_depts"
+)
+
+# 선택된 부서 있으면 해당 채널만, 없으면 전체
+if selected_depts:
+    _dept_filtered_channels = sorted(
+        df[df["담당부서"].isin(selected_depts)]["거래처분류"].dropna().unique().tolist()
+    )
+else:
+    _dept_filtered_channels = sorted(df["거래처분류"].dropna().unique().tolist())
+
+all_channel_groups = sorted(df["거래처분류"].dropna().unique().tolist())
+
+# 채널 Select All 체크박스
+_ch_select_all = st.sidebar.checkbox("채널 전체 선택", value=True, key="ch_select_all")
+if _ch_select_all:
+    selected_channel_groups = _dept_filtered_channels
+else:
+    selected_channel_groups = st.sidebar.multiselect(
+        "채널",
+        options=_dept_filtered_channels,
+        default=_dept_filtered_channels,
+        key="filter_channels"
+    )
+
+# -----------------------------------
+# 품목 필터 — 품목군 → 품목 연동
+# -----------------------------------
+st.sidebar.markdown("**📦 품목**")
+
+_all_item_groups = sorted(df["품목군"].dropna().unique().tolist())
+
+# 품목군: 빈칸으로 시작
+selected_item_groups = st.sidebar.multiselect(
+    "품목군",
+    options=_all_item_groups,
+    default=[],
+    key="filter_item_groups"
+)
+
+# 선택된 품목군 있으면 해당 SKU만, 없으면 전체
+if selected_item_groups:
+    _ig_filtered_items = sorted(
+        df[df["품목군"].isin(selected_item_groups)]["내품상품명"].dropna().unique().tolist()
+    )
+else:
+    _ig_filtered_items = sorted(df["내품상품명"].dropna().unique().tolist())
+
+all_items = sorted(df["내품상품명"].dropna().unique().tolist())
+
+# 품목 Select All 체크박스
+_item_select_all = st.sidebar.checkbox("품목 전체 선택", value=True, key="item_select_all")
+if _item_select_all:
+    selected_items = _ig_filtered_items
+else:
+    selected_items = st.sidebar.multiselect(
+        "품목",
+        options=_ig_filtered_items,
+        default=_ig_filtered_items,
+        key="filter_items"
+    )
 
 # -----------------------------------
 # filtered_df
