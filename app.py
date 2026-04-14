@@ -905,32 +905,10 @@ st.sidebar.header("📌 필터")
 _valid_dates = df["출고일자"].dropna()
 _min_date    = _valid_dates.min().date()
 _max_date    = _valid_dates.max().date()
-_today       = datetime.today().date()
-_today_clamped = min(_today, _max_date)  # 오늘이 데이터 최대일보다 크면 최대일로
 
 st.sidebar.markdown("**📅 기간 설정**")
-
-# 시작일 + TODAY 버튼
-_col_s1, _col_s2 = st.sidebar.columns([3, 1])
-with _col_s1:
-    _date_start = st.date_input("시작일", value=_min_date, min_value=_min_date, max_value=_max_date, key="date_start")
-with _col_s2:
-    st.markdown("<div style='margin-top:28px'>", unsafe_allow_html=True)
-    if st.button("오늘", key="today_start"):
-        st.session_state["date_start"] = _today_clamped
-        st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
-
-# 종료일 + TODAY 버튼
-_col_e1, _col_e2 = st.sidebar.columns([3, 1])
-with _col_e1:
-    _date_end = st.date_input("종료일", value=_max_date, min_value=_min_date, max_value=_max_date, key="date_end")
-with _col_e2:
-    st.markdown("<div style='margin-top:28px'>", unsafe_allow_html=True)
-    if st.button("오늘", key="today_end"):
-        st.session_state["date_end"] = _today_clamped
-        st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
+_date_start = st.sidebar.date_input("시작일", value=_min_date, min_value=_min_date, max_value=_max_date, key="date_start")
+_date_end   = st.sidebar.date_input("종료일", value=_max_date, min_value=_min_date, max_value=_max_date, key="date_end")
 
 if _date_start > _date_end:
     st.sidebar.error("시작일이 종료일보다 늦을 수 없습니다.")
@@ -947,69 +925,11 @@ all_months = sort_month_cols(df["출고년월"].dropna().unique().tolist())
 _date_filtered_df  = df[(df["출고일자"] >= _date_start_dt) & (df["출고일자"] <= _date_end_dt)]
 selected_months    = sort_month_cols(_date_filtered_df["출고년월"].dropna().unique().tolist())
 
-# -----------------------------------
-# 채널 필터 — 담당부서 → 채널 연동
-# -----------------------------------
-st.sidebar.markdown("**🏪 채널**")
-
-# 담당부서 목록 (df 기준)
-_all_depts = sorted(df["담당부서"].dropna().replace("", None).dropna().unique().tolist())
-
-selected_depts = st.sidebar.multiselect(
-    "담당부서",
-    options=_all_depts,
-    default=_all_depts,
-    key="filter_depts"
-)
-
-# 선택된 부서에 속한 채널만 표시
-if selected_depts:
-    _dept_filtered_channels = sorted(
-        df[df["담당부서"].isin(selected_depts)]["거래처분류"].dropna().unique().tolist()
-    )
-else:
-    _dept_filtered_channels = sorted(df["거래처분류"].dropna().unique().tolist())
-
 all_channel_groups = sorted(df["거래처분류"].dropna().unique().tolist())
+all_items          = sorted(df["내품상품명"].dropna().unique().tolist())
 
-selected_channel_groups = st.sidebar.multiselect(
-    "채널",
-    options=_dept_filtered_channels,
-    default=_dept_filtered_channels,
-    key="filter_channels"
-)
-
-# -----------------------------------
-# 품목 필터 — 품목군 → 품목 연동
-# -----------------------------------
-st.sidebar.markdown("**📦 품목**")
-
-# 품목군 목록 (df 기준, 품목군 NaN 제외됨)
-_all_item_groups = sorted(df["품목군"].dropna().unique().tolist())
-
-selected_item_groups = st.sidebar.multiselect(
-    "품목군",
-    options=_all_item_groups,
-    default=_all_item_groups,
-    key="filter_item_groups"
-)
-
-# 선택된 품목군에 속한 SKU만 표시
-if selected_item_groups:
-    _ig_filtered_items = sorted(
-        df[df["품목군"].isin(selected_item_groups)]["내품상품명"].dropna().unique().tolist()
-    )
-else:
-    _ig_filtered_items = sorted(df["내품상품명"].dropna().unique().tolist())
-
-all_items = sorted(df["내품상품명"].dropna().unique().tolist())
-
-selected_items = st.sidebar.multiselect(
-    "품목",
-    options=_ig_filtered_items,
-    default=_ig_filtered_items,
-    key="filter_items"
-)
+selected_channel_groups = st.sidebar.multiselect("채널", all_channel_groups, default=all_channel_groups)
+selected_items          = st.sidebar.multiselect("품목", all_items,          default=all_items)
 
 # -----------------------------------
 # filtered_df
