@@ -641,6 +641,17 @@ def sort_pivot_by_last_month(pivot: pd.DataFrame, month_cols: list) -> pd.DataFr
     data_part  = pivot[pivot.index != "[합계]"].sort_values(last_m, ascending=False)
     return pd.concat([total_part, data_part])
 
+def safe_multiindex_from_tuples(df: pd.DataFrame, tuples: list):
+    if tuples:
+        df.columns = pd.MultiIndex.from_tuples(tuples)
+    return df
+
+def safe_max(series: pd.Series, default=0):
+    if series is None or len(series) == 0:
+        return default
+    value = series.max()
+    return default if pd.isna(value) else value
+
 # -----------------------------------
 # 데이터 로드
 # -----------------------------------
@@ -1136,10 +1147,11 @@ if len(monthly_kpi) >= 2:
 else:
     sales_mom = 0
 
-top_channel = (
+_top_channel_series = (
     filtered_df.groupby("거래처분류")["품목별매출(VAT제외)"]
-    .sum().sort_values(ascending=False).index[0]
+    .sum().sort_values(ascending=False)
 )
+top_channel = _top_channel_series.index[0] if not _top_channel_series.empty else "-"
 
 c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("누적 매출",                    f"{total_sales:,.0f} 원")
@@ -1149,6 +1161,17 @@ c4.metric("매출 총 이익률",                f"{gross_profit_rate:.2f}%")
 c5.metric("Top 채널", top_channel,         delta=f"{sales_mom:.2f}% MoM")
 
 st.divider()
+
+# -----------------------------
+# 차트용 데이터: 매출조정 제외
+# -----------------------------
+filtered_df = filtered_df[
+    filtered_df["내품상품명"].astype(str).str.strip() != "매출조정"
+].copy()
+
+if filtered_df.empty:
+    st.info("차트 및 상세 분석에 표시할 데이터가 없습니다.")
+    st.stop()
 
 created_tabs = st.tabs(visible_tabs_labels)
 
@@ -1226,10 +1249,10 @@ if "월별추이" in tab_map:
             texttemplate='%{text:,.0f}', textposition="top center"
         ))
 
-        y_vals = [monthly["매출액"].max(), monthly["매출총이익"].max()]
+        y_vals = [safe_max(monthly["매출액"], 0), safe_max(monthly["매출총이익"], 0)]
         if has_26_data and show_prev_year and not monthly["전년동월매출"].dropna().empty:
-            y_vals.append(monthly["전년동월매출"].dropna().max())
-        y_max = max(y_vals) * 1.25
+            y_vals.append(safe_max(monthly["전년동월매출"].dropna(), 0))
+        y_max = max(y_vals) * 1.25 if max(y_vals) > 0 else 1
 
         fig.update_layout(height=400, barmode="group",
                           yaxis=dict(range=[0, y_max]),
@@ -1265,7 +1288,7 @@ if "월별추이" in tab_map:
             text=monthly["출고량"] if show_label else None,
             texttemplate='%{text:,.0f}', textposition='outside', cliponaxis=False
         ))
-        fig_qty.update_layout(height=400, yaxis=dict(range=[0, monthly["출고량"].max() * 1.25]),
+        fig_qty.update_layout(height=400, yaxis=dict(range=[0, safe_max(monthly["출고량"], 0) * 1.25 if safe_max(monthly["출고량"], 0) > 0 else 1]),
                                margin=dict(t=40))
         fig_qty.update_traces(textfont=dict(size=12, color="black"))
         st.plotly_chart(fig_qty, use_container_width=True)
@@ -1539,12 +1562,15 @@ if "채널분석" in tab_map:
                 tuples.append((c, "매출액"))
             else:
                 tuples.append((c.replace("_구성비", ""), "구성비"))
-        ch_display.columns = pd.MultiIndex.from_tuples(tuples)
+        ch_display = safe_multiindex_from_tuples(ch_display, tuples)
         ch_display_fmt = {}
         for m in ch_sales_mcols:
             ch_display_fmt[(m, "매출액")] = "{:,.0f}"
             ch_display_fmt[(m, "구성비")] = "{:.0%}"
-        st.dataframe(ch_display.style.format(ch_display_fmt), use_container_width=True)
+        if ch_display.empty:
+            st.info("표시할 채널별 매출 데이터가 없습니다.")
+        else:
+            st.dataframe(ch_display.style.format(ch_display_fmt), use_container_width=True)
 
         st.subheader("📦 월별 채널별 출고량")
         ch_qty_pivot = pd.pivot_table(
@@ -1637,13 +1663,16 @@ if "제품분석" in tab_map:
                 tuples_prod.append((c.replace("_구성비", ""), "구성비"))
             else:
                 tuples_prod.append((c.replace("_개당단가", ""), "개당단가"))
-        prod_display.columns = pd.MultiIndex.from_tuples(tuples_prod)
+        prod_display = safe_multiindex_from_tuples(prod_display, tuples_prod)
         prod_display_fmt = {}
         for m in prod_s_mcols:
             prod_display_fmt[(m, "매출액")]   = "{:,.0f}"
             prod_display_fmt[(m, "구성비")]   = "{:.0%}"
             prod_display_fmt[(m, "개당단가")] = "{:,.0f}"
-        st.dataframe(prod_display.style.format(prod_display_fmt), use_container_width=True)
+        if prod_display.empty:
+            st.info("표시할 제품별 매출 데이터가 없습니다.")
+        else:
+            st.dataframe(prod_display.style.format(prod_display_fmt), use_container_width=True)
 
         st.subheader("📦 월별 제품별 출고량")
         prod_q_pivot = pd.pivot_table(
@@ -2308,10 +2337,10 @@ if "제품별원가" in tab_map:
 
                 # (4) 월 컬럼 YYYY-MM 기준 오름차순 정렬
                 month_cols = sort_month_cols(pivot_df.columns.tolist())
-                pivot_df   = pivot_df[month_cols]
+                pivot_df   = pivot_df[month_cols] if month_cols else pivot_df
 
                 # (5) 평균 컬럼 추가 (NaN 자동 제외)
-                pivot_df["평균"] = pivot_df.mean(axis=1)
+                pivot_df["평균"] = pivot_df.mean(axis=1) if len(pivot_df.columns) > 0 else np.nan
 
                 # (6) 컬럼명 rename 및 index reset
                 pivot_df = pivot_df.reset_index()
@@ -2325,10 +2354,13 @@ if "제품별원가" in tab_map:
                 fmt_dict    = {c: "{:,.2f}" for c in num_cols}
 
                 st.caption(f"총 {len(pivot_df)}개 제품 | 기간: {month_cols[0] if month_cols else '-'} ~ {month_cols[-1] if month_cols else '-'}")
-                st.dataframe(
-                    pivot_df.style.format(fmt_dict, na_rep="-"),
-                    use_container_width=True,
-                    height=500
-                )
+                if pivot_df.empty:
+                    st.info("표시할 제품별 원가 데이터가 없습니다.")
+                else:
+                    st.dataframe(
+                        pivot_df.style.format(fmt_dict, na_rep="-"),
+                        use_container_width=True,
+                        height=500
+                    )
 
-st.success("🚀 Lingtea Dashboard v8.3 Ready")
+st.success("🚀 Lingtea Dashboard v8.4 Ready")
