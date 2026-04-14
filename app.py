@@ -21,7 +21,7 @@ st.set_page_config(page_title="Lingtea Dashboard", layout="wide")
 
 SHEET_ID = "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
 
-ALL_TABS = ["월별추이", "주차별추이", "채널분석", "제품분석", "공헌이익분석(국내)", "공헌이익분석(해외)", "공헌이익분석(통합)", "제품별원가", "다운로드"]
+ALL_TABS = ["월별추이", "주차별추이", "채널분석", "제품분석", "공헌이익분석(통합)", "공헌이익분석(국내)", "공헌이익분석(해외)", "제품별원가", "다운로드"]
 
 DEFAULT_USER_TABS = {t: False for t in ALL_TABS}
 DEFAULT_ADMIN_TABS = {t: True for t in ALL_TABS}
