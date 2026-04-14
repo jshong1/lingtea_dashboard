@@ -780,7 +780,7 @@ def build_dataset():
     merged["매출총이익률"] = safe_divide(merged["매출총이익"], merged["품목별매출(VAT제외)"])
     # [수정] 품목군 NaN·공란·"nan" 행 제외 — 단, "매출조정" 행은 예외 보존
     # 매출조정은 ITEM_MASTER에 없어 품목군 NaN이지만 음수 매출로 반드시 합산되어야 함
-    # 제외하면 Streamlit 매출이 VIEW_TABLE 합계보다 과대 집계됨
+    # 부서 구분 없이 전체 거래처의 매출조정 행 모두 보존
     _is_adj = merged["내품상품명"].astype(str).str.strip() == "매출조정"
     _has_item_group = (
         merged["품목군"].notna() &
@@ -1021,7 +1021,7 @@ _base_mask = (
     (df["출고일자"] <= _date_end_dt) &
     (df["거래처분류"].isin(selected_channel_groups))
 )
-# 매출조정 행은 품목 필터와 무관하게 항상 포함 (음수 매출 반영 필수)
+# 매출조정 행은 부서 구분 없이 품목 필터와 무관하게 항상 포함 (음수 매출 반영 필수)
 _is_adj_mask = df["내품상품명"].astype(str).str.strip() == "매출조정"
 filtered_df = df[
     _base_mask & (df["내품상품명"].isin(selected_items) | _is_adj_mask)
@@ -1270,6 +1270,56 @@ if "월별추이" in tab_map:
         fig_qty.update_traces(textfont=dict(size=12, color="black"))
         st.plotly_chart(fig_qty, use_container_width=True)
 
+        # ── 부서별 매출 구성비 도넛 차트 (expander) ──
+        with st.expander("🏢 부서별 월별 매출 구성비", expanded=False):
+            # 매출조정 행 제외하고 집계 (부서 귀속 불분명한 조정액 제외)
+            _dept_df = filtered_df[filtered_df["내품상품명"].astype(str).str.strip() != "매출조정"].copy()
+            _dept_monthly = (
+                _dept_df.groupby(["출고년월", "담당부서"], as_index=False)["품목별매출(VAT제외)"].sum()
+            )
+            _dept_monthly = _dept_monthly[_dept_monthly["품목별매출(VAT제외)"] > 0]
+
+            _months_sorted = sort_month_cols(_dept_monthly["출고년월"].dropna().unique().tolist())
+
+            if not _months_sorted:
+                st.info("표시할 부서별 데이터가 없습니다.")
+            else:
+                # 월이 많으면 한 줄에 3개씩 배치
+                _cols_per_row = 3
+                _rows = [_months_sorted[i:i+_cols_per_row] for i in range(0, len(_months_sorted), _cols_per_row)]
+
+                # 부서 색상 고정 (최대 12개 부서)
+                _dept_list = sorted(_dept_monthly["담당부서"].dropna().unique().tolist())
+                _palette = [
+                    "#1f77b4","#ff7f0e","#2ca02c","#d62728","#9467bd",
+                    "#8c564b","#e377c2","#7f7f7f","#bcbd22","#17becf",
+                    "#aec7e8","#ffbb78",
+                ]
+                _color_map = {d: _palette[i % len(_palette)] for i, d in enumerate(_dept_list)}
+
+                for _row_months in _rows:
+                    _cols = st.columns(len(_row_months))
+                    for _ci, _ym in enumerate(_row_months):
+                        _slice = _dept_monthly[_dept_monthly["출고년월"] == _ym].copy()
+                        _total = _slice["품목별매출(VAT제외)"].sum()
+                        with _cols[_ci]:
+                            st.caption(f"**{_ym}** | 합계 {_total:,.0f}원")
+                            _fig_pie = go.Figure(go.Pie(
+                                labels=_slice["담당부서"],
+                                values=_slice["품목별매출(VAT제외)"],
+                                hole=0.45,
+                                marker_colors=[_color_map.get(d, "#cccccc") for d in _slice["담당부서"]],
+                                textinfo="label+percent",
+                                textfont=dict(size=11),
+                                hovertemplate="%{label}<br>%{value:,.0f}원<br>%{percent}<extra></extra>",
+                            ))
+                            _fig_pie.update_layout(
+                                height=280,
+                                margin=dict(t=10, b=10, l=10, r=10),
+                                showlegend=False,
+                            )
+                            st.plotly_chart(_fig_pie, use_container_width=True, key=f"pie_{_ym}")
+
 # ===================================
 # TAB 2: 주차별 추이
 # ===================================
@@ -1284,11 +1334,23 @@ if "주차별추이" in tab_map:
         wdf["주차_int"] = wdf["주차"].astype(int)
         wdf["연도주차"] = wdf["연도"].astype(str) + "-W" + wdf["주차_int"].astype(str).str.zfill(2)
 
+        # [수정] x축 레이블: ISO 주차 → 해당 주의 월요일~일요일 날짜 범위로 변환
+        # 예) 2026-W14 → 26.03.30~26.04.05
+        def week_to_date_range(yw: str) -> str:
+            try:
+                year, w = yw.split("-W")
+                mon = datetime.strptime(f"{year}-W{w}-1", "%Y-W%W-%w")
+                sun = mon + pd.Timedelta(days=6)
+                return f"{mon.strftime('%y.%m.%d')}~{sun.strftime('%y.%m.%d')}"
+            except Exception:
+                return yw
+
         # 정렬 기준용 숫자키
         wdf["연도주차_key"] = wdf["연도"] * 100 + wdf["주차_int"]
+        wdf["주차_label"] = wdf["연도주차"].apply(week_to_date_range)
 
         weekly = (
-            wdf.groupby(["연도주차", "연도주차_key"], as_index=False)[
+            wdf.groupby(["연도주차", "연도주차_key", "주차_label"], as_index=False)[
                 ["품목별매출(VAT제외)", "매출총이익", "총내품출고수량"]
             ].sum()
         )
@@ -1318,7 +1380,7 @@ if "주차별추이" in tab_map:
             st.markdown("### 💰 주차별 매출액 / 매출총이익")
             fig_wk = go.Figure()
             fig_wk.add_trace(go.Bar(
-                x=weekly_view["연도주차"],
+                x=weekly_view["주차_label"],
                 y=weekly_view["매출액"],
                 name="매출액",
                 marker_color="#1f77b4",
@@ -1328,7 +1390,7 @@ if "주차별추이" in tab_map:
                 cliponaxis=False,
             ))
             fig_wk.add_trace(go.Scatter(
-                x=weekly_view["연도주차"],
+                x=weekly_view["주차_label"],
                 y=weekly_view["매출총이익"],
                 name="매출총이익",
                 mode="lines+markers+text" if wk_show_label else "lines+markers",
@@ -1343,20 +1405,20 @@ if "주차별추이" in tab_map:
                 barmode="group",
                 yaxis=dict(range=[0, wk_y_max]),
                 legend=dict(orientation="h"),
-                margin=dict(t=40),
-                xaxis=dict(tickangle=-45),
+                margin=dict(t=40, b=60),
+                xaxis=dict(tickangle=0, tickfont=dict(size=11)),
             )
             fig_wk.update_traces(textfont=dict(size=11, color="black"))
             st.plotly_chart(fig_wk, use_container_width=True)
 
-            # ── 주차별 출고량 차트 (매출액 차트와 동일 색상) ──
+            # ── 주차별 출고량 차트 ──
             st.markdown("### 📦 주차별 출고량")
             fig_wk_qty = go.Figure()
             fig_wk_qty.add_trace(go.Bar(
-                x=weekly_view["연도주차"],
+                x=weekly_view["주차_label"],
                 y=weekly_view["출고량"],
                 name="출고량",
-                marker_color="#1f77b4",   # 매출액 차트와 동일 색상
+                marker_color="#1f77b4",
                 text=weekly_view["출고량"] if wk_show_label else None,
                 texttemplate="%{text:,.0f}",
                 textposition="outside",
@@ -1365,8 +1427,8 @@ if "주차별추이" in tab_map:
             fig_wk_qty.update_layout(
                 height=380,
                 yaxis=dict(range=[0, weekly_view["출고량"].max() * 1.3]),
-                margin=dict(t=40),
-                xaxis=dict(tickangle=-45),
+                margin=dict(t=40, b=60),
+                xaxis=dict(tickangle=0, tickfont=dict(size=11)),
             )
             fig_wk_qty.update_traces(textfont=dict(size=11, color="black"))
             st.plotly_chart(fig_wk_qty, use_container_width=True)
@@ -1375,12 +1437,15 @@ if "주차별추이" in tab_map:
             with st.expander("🗂️ 채널별 주차 매출 히트맵", expanded=False):
                 wk_ch_pivot = wdf.copy()
                 wk_ch_pivot = wk_ch_pivot[wk_ch_pivot["연도주차"].isin(weekly_view["연도주차"])]
-                wk_ch_pivot = wk_ch_pivot.groupby(["거래처분류", "연도주차", "연도주차_key"])["품목별매출(VAT제외)"].sum().reset_index()
+                # 주차_label 매핑 딕셔너리
+                _label_map = dict(zip(weekly_view["연도주차"], weekly_view["주차_label"]))
+                wk_ch_pivot["주차_label"] = wk_ch_pivot["연도주차"].map(_label_map)
+                wk_ch_pivot = wk_ch_pivot.groupby(["거래처분류", "주차_label"])["품목별매출(VAT제외)"].sum().reset_index()
                 wk_ch_pivot = wk_ch_pivot.pivot_table(
-                    index="거래처분류", columns="연도주차", values="품목별매출(VAT제외)", aggfunc="sum", fill_value=0
+                    index="거래처분류", columns="주차_label", values="품목별매출(VAT제외)", aggfunc="sum", fill_value=0
                 )
-                sorted_weeks = weekly_view["연도주차"].tolist()
-                wk_ch_pivot = wk_ch_pivot.reindex(columns=sorted_weeks, fill_value=0)
+                sorted_labels = weekly_view["주차_label"].tolist()
+                wk_ch_pivot = wk_ch_pivot.reindex(columns=sorted_labels, fill_value=0)
                 wk_ch_pivot["_total"] = wk_ch_pivot.sum(axis=1)
                 wk_ch_pivot = wk_ch_pivot.sort_values("_total", ascending=False).drop(columns="_total").head(15)
 
@@ -1392,15 +1457,15 @@ if "주차별추이" in tab_map:
                     labels=dict(x="주차", y="채널", color="매출액"),
                 )
                 fig_heat.update_traces(texttemplate="%{z:,.0f}", textfont=dict(size=10))
-                fig_heat.update_layout(height=420, margin=dict(t=30), xaxis=dict(tickangle=-45))
+                fig_heat.update_layout(height=420, margin=dict(t=30), xaxis=dict(tickangle=0))
                 st.plotly_chart(fig_heat, use_container_width=True)
 
             # ── 주차별 상세 테이블 ──
             with st.expander("📋 주차별 상세 데이터", expanded=False):
-                wk_table = weekly_view[["연도주차", "매출액", "매출총이익", "출고량"]].copy()
+                wk_table = weekly_view[["주차_label", "매출액", "매출총이익", "출고량"]].copy()
                 wk_table["매출총이익률"] = safe_divide(wk_table["매출총이익"], wk_table["매출액"]) * 100
                 wk_table["매출액_WoW"] = wk_table["매출액"].pct_change() * 100
-                wk_table = wk_table.rename(columns={"연도주차": "주차"})
+                wk_table = wk_table.rename(columns={"주차_label": "주차"})
                 st.dataframe(
                     wk_table.style.format({
                         "매출액": "{:,.0f}",
@@ -2262,4 +2327,4 @@ if "제품별원가" in tab_map:
                     height=500
                 )
 
-st.success("🚀 Lingtea Dashboard v8.2 Ready")
+st.success("🚀 Lingtea Dashboard v8.3 Ready")
