@@ -747,7 +747,10 @@ def build_dataset():
     df        = load_view_table()
     item_df, cust_df = load_master()
     cost_dict = load_cost_master()
-    merged = df.merge(item_df[["상품명", "품목군"]], left_on="내품상품명", right_on="상품명", how="left")
+    merged = df.merge(
+        item_df[["상품명", "품목군"]].drop_duplicates("상품명"),  # 상품명 중복 시 행 증식 방지
+        left_on="내품상품명", right_on="상품명", how="left"
+    )
     merged["거래처분류"] = merged["거래처코드"]
     # [추가] 거래처분류(CUSTOMER_MASTER B열) 기준으로 merge → 담당부서 포함
     # VIEW_TABLE.거래처코드 == CUSTOMER_MASTER.거래처분류(B열)
@@ -778,17 +781,14 @@ def build_dataset():
     merged["채널수수료"] = merged["품목별매출(VAT제외)"] * merged["수수료율"]
     merged["매출총이익"]  = merged["품목별매출(VAT제외)"] - merged["원가총액"]
     merged["매출총이익률"] = safe_divide(merged["매출총이익"], merged["품목별매출(VAT제외)"])
-    # [수정] 품목군 NaN·공란·"nan" 행 제외 — 단, "매출조정" 행은 예외 보존
-    # 매출조정은 ITEM_MASTER에 없어 품목군 NaN이지만 음수 매출로 반드시 합산되어야 함
-    # 부서 구분 없이 전체 거래처의 매출조정 행 모두 보존
-    _is_adj = merged["내품상품명"].astype(str).str.strip() == "매출조정"
-    _has_item_group = (
-        merged["품목군"].notna() &
-        (merged["품목군"].astype(str).str.strip() != "") &
-        (merged["품목군"].astype(str).str.strip() != "nan")
-    )
-    merged = merged[_has_item_group | _is_adj].copy()
-    # 매출조정 행 품목군을 명시적 레이블로 채워 광고비·물류비 배분 대상에서 자동 제외
+    # 품목군 NaN·공란 행 → 제외하지 않고 "__미분류__" 레이블로 보존
+    # 매출 합계 정확성 유지 + 광고비·물류비 배분 대상에서는 자동 제외됨
+    merged["품목군"] = merged["품목군"].fillna("__미분류__")
+    merged.loc[
+        merged["품목군"].astype(str).str.strip().isin(["", "nan"]),
+        "품목군"
+    ] = "__미분류__"
+    # 매출조정 행도 동일하게 명시적 레이블 부여
     merged.loc[merged["내품상품명"].astype(str).str.strip() == "매출조정", "품목군"] = "__매출조정__"
     return merged
 
@@ -977,7 +977,7 @@ st.sidebar.markdown("**📦 품목**")
 
 _all_item_groups = sorted([
     g for g in df["품목군"].dropna().unique().tolist()
-    if g != "__매출조정__"
+    if g not in ("__매출조정__", "__미분류__")
 ])
 
 # 품목군: 빈칸으로 시작
@@ -1755,6 +1755,8 @@ def _render_contrib_tab(base_df, market_filter, tab_label, ad_apply):
         - pc["물류비"] - pc["광고비"] - pc["비용"]
     )
     pc["공헌이익률"] = safe_divide(pc["공헌이익"], pc["품목별매출(VAT제외)"])
+    # 내부 레이블 행 제외 (표시용)
+    pc = pc[~pc["품목군"].isin(["__매출조정__", "__미분류__"])]
     pc = pc[["품목군", "총내품출고수량", "품목별매출(VAT제외)", "원가총액",
              "매출총이익", "채널수수료", "물류비", "광고비", "비용", "공헌이익", "공헌이익률"]]
     st.dataframe(pc.style.format({
@@ -1935,6 +1937,8 @@ if "공헌이익분석(통합)" in tab_map:
             - product_contrib["비용"]
         )
         product_contrib["공헌이익률"] = safe_divide(product_contrib["공헌이익"], product_contrib["품목별매출(VAT제외)"])
+        # 내부 레이블 행 제외 (표시용)
+        product_contrib = product_contrib[~product_contrib["품목군"].isin(["__매출조정__", "__미분류__"])]
         product_contrib = product_contrib[[
             "품목군", "총내품출고수량", "품목별매출(VAT제외)",
             "원가총액", "매출총이익", "채널수수료",
