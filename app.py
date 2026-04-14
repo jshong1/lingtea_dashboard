@@ -778,13 +778,18 @@ def build_dataset():
     merged["채널수수료"] = merged["품목별매출(VAT제외)"] * merged["수수료율"]
     merged["매출총이익"]  = merged["품목별매출(VAT제외)"] - merged["원가총액"]
     merged["매출총이익률"] = safe_divide(merged["매출총이익"], merged["품목별매출(VAT제외)"])
-    # [수정] 품목군 NaN·공란·"nan" 행 제외 — 판촉물·원재료 등 비정상 품목
-    # 광고비·물류비 분모 오염 방지 및 공헌이익 집계 제외
-    merged = merged[
+    # [수정] 품목군 NaN·공란·"nan" 행 제외 — 단, "매출조정" 행은 예외 보존
+    # 매출조정은 ITEM_MASTER에 없어 품목군 NaN이지만 음수 매출로 반드시 합산되어야 함
+    # 제외하면 Streamlit 매출이 VIEW_TABLE 합계보다 과대 집계됨
+    _is_adj = merged["내품상품명"].astype(str).str.strip() == "매출조정"
+    _has_item_group = (
         merged["품목군"].notna() &
         (merged["품목군"].astype(str).str.strip() != "") &
         (merged["품목군"].astype(str).str.strip() != "nan")
-    ].copy()
+    )
+    merged = merged[_has_item_group | _is_adj].copy()
+    # 매출조정 행 품목군을 명시적 레이블로 채워 광고비·물류비 배분 대상에서 자동 제외
+    merged.loc[merged["내품상품명"].astype(str).str.strip() == "매출조정", "품목군"] = "__매출조정__"
     return merged
 
 # -----------------------------------
@@ -970,7 +975,10 @@ else:
 # -----------------------------------
 st.sidebar.markdown("**📦 품목**")
 
-_all_item_groups = sorted(df["품목군"].dropna().unique().tolist())
+_all_item_groups = sorted([
+    g for g in df["품목군"].dropna().unique().tolist()
+    if g != "__매출조정__"
+])
 
 # 품목군: 빈칸으로 시작
 selected_item_groups = st.sidebar.multiselect(
@@ -988,7 +996,10 @@ if selected_item_groups:
 else:
     _ig_filtered_items = sorted(df["내품상품명"].dropna().unique().tolist())
 
-all_items = sorted(df["내품상품명"].dropna().unique().tolist())
+all_items = sorted([
+    i for i in df["내품상품명"].dropna().unique().tolist()
+    if i != "매출조정"
+])
 
 # 품목 Select All 체크박스
 _item_select_all = st.sidebar.checkbox("품목 전체 선택", value=True, key="item_select_all")
@@ -1005,11 +1016,15 @@ else:
 # -----------------------------------
 # filtered_df
 # -----------------------------------
-filtered_df = df[
+_base_mask = (
     (df["출고일자"] >= _date_start_dt) &
     (df["출고일자"] <= _date_end_dt) &
-    (df["거래처분류"].isin(selected_channel_groups)) &
-    (df["내품상품명"].isin(selected_items))
+    (df["거래처분류"].isin(selected_channel_groups))
+)
+# 매출조정 행은 품목 필터와 무관하게 항상 포함 (음수 매출 반영 필수)
+_is_adj_mask = df["내품상품명"].astype(str).str.strip() == "매출조정"
+filtered_df = df[
+    _base_mask & (df["내품상품명"].isin(selected_items) | _is_adj_mask)
 ].copy()
 
 # -----------------------------------
@@ -2247,4 +2262,4 @@ if "제품별원가" in tab_map:
                     height=500
                 )
 
-st.success("🚀 Lingtea Dashboard v8.1 Ready")
+st.success("🚀 Lingtea Dashboard v8.2 Ready")
