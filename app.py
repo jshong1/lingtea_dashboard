@@ -21,7 +21,7 @@ st.set_page_config(page_title="Lingtea Dashboard", layout="wide")
 
 SHEET_ID = "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
 
-ALL_TABS = ["월별추이", "주차별추이", "채널분석", "제품분석", "공헌이익분석", "제품별원가", "다운로드"]
+ALL_TABS = ["월별추이", "주차별추이", "채널분석", "제품분석", "공헌이익분석(국내)", "공헌이익분석(해외)", "공헌이익분석(통합)", "제품별원가", "다운로드"]
 
 DEFAULT_USER_TABS = {t: False for t in ALL_TABS}
 DEFAULT_ADMIN_TABS = {t: True for t in ALL_TABS}
@@ -1007,13 +1007,15 @@ filtered_df["공헌이익률"] = safe_divide(filtered_df["공헌이익"], filter
 # 탭 구성 (권한에 따라 동적 생성) — KPI보다 먼저 체크
 # -----------------------------------
 tab_defs = {
-    "월별추이":    "📈 월별 추이",
-    "주차별추이":  "📅 주차별 추이",
-    "채널분석":    "🏪 채널 분석",
-    "제품분석":    "📦 제품 분석",
-    "공헌이익분석": "📊 공헌이익 분석",
-    "제품별원가":  "💰 제품별 원가",
-    "다운로드":    "📥 다운로드",
+    "월별추이":         "📈 월별 추이",
+    "주차별추이":       "📅 주차별 추이",
+    "채널분석":         "🏪 채널 분석",
+    "제품분석":         "📦 제품 분석",
+    "공헌이익분석(국내)": "📊 공헌이익(국내)",
+    "공헌이익분석(해외)": "🌏 공헌이익(해외)",
+    "공헌이익분석(통합)": "📋 공헌이익(통합)",
+    "제품별원가":       "💰 제품별 원가",
+    "다운로드":         "📥 다운로드",
 }
 
 visible_tabs = [k for k in ALL_TABS if tab_allowed(k)]
@@ -1504,11 +1506,160 @@ if "제품분석" in tab_map:
         st.dataframe(prod_q_pivot.style.format("{:,.0f}"), use_container_width=True)
 
 # ===================================
-# TAB 4: 공헌이익 분석
 # ===================================
-if "공헌이익분석" in tab_map:
-    with tab_map["공헌이익분석"]:
-        st.subheader("📊 공헌이익 분석")
+# TAB 4: 공헌이익 분석 (국내)
+# ===================================
+def _render_contrib_tab(base_df, market_filter, tab_label, ad_apply):
+    """공헌이익 분석 공통 렌더링 함수.
+    base_df     : filtered_df 기준 (이미 권한 필터 적용된 전체 df)
+    market_filter: "국내" / "해외" / None(통합)
+    tab_label   : subheader 표시용 문자열
+    ad_apply    : 광고비 안분 여부 (해외는 False)
+    """
+    # ── 시장구분 필터 적용 ──
+    if market_filter == "국내":
+        mdf = base_df[base_df["국내여부"] == "국내"].copy()
+    elif market_filter == "해외":
+        mdf = base_df[base_df["국내여부"] != "국내"].copy()
+    else:
+        mdf = base_df.copy()
+
+    st.subheader(tab_label)
+    st.caption("※ 물류비 / 광고비는 COST_INPUT 시트에서 수정됩니다")
+
+    if mdf.empty:
+        st.info("해당 조건에 데이터가 없습니다.")
+        return
+
+    # ── 비용 재계산 (market_filter된 mdf 기준) ──
+    mdf["물류비"] = 0.0
+    mdf["광고비"] = 0.0
+
+    for m in selected_months:
+        m_mask = mdf["출고년월"] == m
+
+        # 물류비: 부서별 배분
+        _depts_m2 = set(dept for (dept, ym) in st.session_state["logistics_table"].keys() if ym == m)
+        for dept in _depts_m2:
+            dept_amt = st.session_state["logistics_table"].get((dept, m), 0)
+            if dept_amt <= 0:
+                continue
+            # 분모: 해당 부서 전체 매출 (df 기준)
+            dept_tot = df.loc[(df["출고년월"] == m) & (df["담당부서"] == dept), "품목별매출(VAT제외)"].sum()
+            if dept_tot <= 0:
+                continue
+            f_mask = m_mask & (mdf["담당부서"] == dept)
+            mdf.loc[f_mask, "물류비"] = mdf.loc[f_mask, "품목별매출(VAT제외)"] / dept_tot * dept_amt
+
+        # 광고비: 국내만 안분, 해외는 0
+        if ad_apply:
+            _igs_m2 = set(ig for (ig, ym) in st.session_state["ad_cost_monthly"].keys() if ym == m)
+            for ig in _igs_m2:
+                ad_amt = st.session_state["ad_cost_monthly"].get((ig, m), 0)
+                if ad_amt <= 0:
+                    continue
+                # 분모: 품목군 국내 전체 매출 (df 기준)
+                ig_tot = df.loc[
+                    (df["출고년월"] == m) & (df["품목군"] == ig) & (df["국내여부"] == "국내"),
+                    "품목별매출(VAT제외)"
+                ].sum()
+                if ig_tot <= 0:
+                    continue
+                f_mask = m_mask & (mdf["품목군"] == ig) & (mdf["국내여부"] == "국내")
+                mdf.loc[f_mask, "광고비"] = mdf.loc[f_mask, "품목별매출(VAT제외)"] / ig_tot * ad_amt
+
+    mdf["공헌이익"] = (
+        mdf["품목별매출(VAT제외)"]
+        - mdf["원가총액"]
+        - mdf["채널수수료"]
+        - mdf["물류비"]
+        - mdf["광고비"]
+    )
+    mdf["공헌이익률"] = safe_divide(mdf["공헌이익"], mdf["품목별매출(VAT제외)"])
+
+    # ── 품목군별 공헌이익 ──
+    st.markdown("### 📦 품목군별 공헌이익")
+    pc = mdf.groupby("품목군", as_index=False)[[
+        "총내품출고수량", "품목별매출(VAT제외)", "원가총액",
+        "매출총이익", "채널수수료", "물류비", "광고비"
+    ]].sum()
+    pc["비용"] = 0.0
+    _ch_dept_map3 = st.session_state.get("channel_dept_map", {})
+    for (ym, ch, ig), amt in st.session_state["channel_cost"].items():
+        if ym not in selected_months or ch not in selected_channel_groups:
+            continue
+        # 해외탭: 해당 거래처가 해외인 경우만 / 국내탭: 국내인 경우만 / 통합: 전체
+        if market_filter is not None:
+            ch_is_dom = (st.session_state.get("channel_dept_map", {}).get(ch, "") != "") and \
+                        mdf[mdf["거래처분류"] == ch]["국내여부"].eq("국내").any() if not mdf[mdf["거래처분류"] == ch].empty else True
+            # 단순하게 mdf에 해당 채널이 있는지로 판단
+            if mdf[mdf["거래처분류"] == ch].empty:
+                continue
+        mask = pc["품목군"] == ig
+        if mask.any():
+            pc.loc[mask, "비용"] += amt
+
+    pc["공헌이익"] = (
+        pc["품목별매출(VAT제외)"] - pc["원가총액"] - pc["채널수수료"]
+        - pc["물류비"] - pc["광고비"] - pc["비용"]
+    )
+    pc["공헌이익률"] = safe_divide(pc["공헌이익"], pc["품목별매출(VAT제외)"])
+    pc = pc[["품목군", "총내품출고수량", "품목별매출(VAT제외)", "원가총액",
+             "매출총이익", "채널수수료", "물류비", "광고비", "비용", "공헌이익", "공헌이익률"]]
+    st.dataframe(pc.style.format({
+        "총내품출고수량": "{:,.0f}", "품목별매출(VAT제외)": "{:,.0f}",
+        "원가총액": "{:,.0f}", "매출총이익": "{:,.0f}", "채널수수료": "{:,.0f}",
+        "물류비": "{:,.0f}", "광고비": "{:,.0f}", "비용": "{:,.0f}",
+        "공헌이익": "{:,.0f}", "공헌이익률": "{:.2%}",
+    }), use_container_width=True)
+
+    # ── 채널별 공헌이익 ──
+    with st.expander("🏪 채널별 공헌이익", expanded=False):
+        cc = mdf.groupby("거래처분류", as_index=False)[[
+            "총내품출고수량", "품목별매출(VAT제외)", "원가총액",
+            "매출총이익", "채널수수료", "물류비", "광고비"
+        ]].sum()
+        cc["비용"] = 0.0
+        for (ym, ch, ig), amt in st.session_state["channel_cost"].items():
+            if ym not in selected_months:
+                continue
+            if market_filter is not None and mdf[mdf["거래처분류"] == ch].empty:
+                continue
+            mask = cc["거래처분류"] == ch
+            if mask.any():
+                cc.loc[mask, "비용"] += amt
+        cc["공헌이익"] = (
+            cc["품목별매출(VAT제외)"] - cc["원가총액"] - cc["채널수수료"]
+            - cc["물류비"] - cc["광고비"] - cc["비용"]
+        )
+        cc["공헌이익률"] = safe_divide(cc["공헌이익"], cc["품목별매출(VAT제외)"])
+        cc = cc[["거래처분류", "총내품출고수량", "품목별매출(VAT제외)", "원가총액",
+                 "매출총이익", "채널수수료", "물류비", "광고비", "비용", "공헌이익", "공헌이익률"]]
+        st.dataframe(cc.style.format({
+            "총내품출고수량": "{:,.0f}", "품목별매출(VAT제외)": "{:,.0f}",
+            "원가총액": "{:,.0f}", "매출총이익": "{:,.0f}", "채널수수료": "{:,.0f}",
+            "물류비": "{:,.0f}", "광고비": "{:,.0f}", "비용": "{:,.0f}",
+            "공헌이익": "{:,.0f}", "공헌이익률": "{:.2%}",
+        }), use_container_width=True)
+
+
+if "공헌이익분석(국내)" in tab_map:
+    with tab_map["공헌이익분석(국내)"]:
+        _render_contrib_tab(filtered_df, "국내", "📊 공헌이익 분석 (국내)", ad_apply=True)
+
+# ===================================
+# TAB 5: 공헌이익 분석 (해외)
+# ===================================
+if "공헌이익분석(해외)" in tab_map:
+    with tab_map["공헌이익분석(해외)"]:
+        _render_contrib_tab(filtered_df, "해외", "🌏 공헌이익 분석 (해외)", ad_apply=False)
+
+# ===================================
+# TAB 6: 공헌이익 분석 (통합)
+# ===================================
+if "공헌이익분석(통합)" in tab_map:
+    with tab_map["공헌이익분석(통합)"]:
+        st.subheader("📋 공헌이익 분석 (통합)")
         st.caption("※ 물류비 / 광고비는 COST_INPUT 시트에서 수정됩니다")
 
         st.markdown("### 🚚 부서별 월별 물류비")
@@ -1691,7 +1842,7 @@ if "공헌이익분석" in tab_map:
             )
 
 # ===================================
-# TAB 5: 다운로드
+# TAB 7: 다운로드
 # ===================================
 if "다운로드" in tab_map:
     with tab_map["다운로드"]:
@@ -2025,4 +2176,4 @@ if "제품별원가" in tab_map:
                     height=500
                 )
 
-st.success("🚀 Lingtea Dashboard v8 Ready")
+st.success("🚀 Lingtea Dashboard v8.1 Ready")
