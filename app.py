@@ -1844,54 +1844,6 @@ if "공헌이익분석(통합)" in tab_map:
         st.subheader("📋 공헌이익 분석 (통합)")
         st.caption("※ 물류비 / 광고비는 COST_INPUT 시트에서 수정됩니다")
 
-        st.markdown("### 🚚 부서별 월별 물류비")
-        # logistics_table 키: (부서명, 년월) → 부서×월 피벗으로 표시
-        _lt = st.session_state["logistics_table"]
-        if _lt:
-            _depts_all = sorted(set(dept for (dept, ym) in _lt.keys()))
-            _logistics_rows = []
-            for dept in _depts_all:
-                row = {"부서": dept}
-                for m in all_months:
-                    row[m] = _lt.get((dept, m), 0)
-                _logistics_rows.append(row)
-            _logistics_display = pd.DataFrame(_logistics_rows).set_index("부서")
-            st.dataframe(_logistics_display.style.format("{:,.0f}"), use_container_width=True)
-        else:
-            st.info("COST_INPUT 시트에 물류비 데이터가 없습니다.")
-
-        st.markdown("### 📢 품목군별 광고비")
-        ad_data  = []
-        # ad_cost_monthly 키: (품목군, 년월)
-        item_groups_ad = sorted(set(k[0] for k in st.session_state["ad_cost_monthly"].keys()))
-        for ig in item_groups_ad:
-            row = {"품목군": ig}
-            for m in all_months:
-                row[m] = st.session_state["ad_cost_monthly"].get((ig, m), 0)
-            ad_data.append(row)
-        ad_df = pd.DataFrame(ad_data)
-        ad_mcols = [c for c in ad_df.columns if c != "품목군"]
-        st.dataframe(ad_df.style.format({m: "{:,.0f}" for m in ad_mcols}), use_container_width=True)
-
-        st.markdown("### 💸 채널별 후정산 비용")
-        if st.session_state["channel_cost"]:
-            _ch_dept_map_disp = st.session_state.get("channel_dept_map", {})
-            cc_rows = [
-                {
-                    "년월": ym,
-                    "거래처명": ch,
-                    "담당부서": _ch_dept_map_disp.get(ch, "-"),
-                    "품목군": ig,
-                    "비용(VAT-)": amt,
-                }
-                for (ym, ch, ig), amt in st.session_state["channel_cost"].items()
-            ]
-            cc_df = pd.DataFrame(cc_rows).sort_values(["년월", "담당부서", "거래처명", "품목군"])
-            st.dataframe(cc_df.style.format({"비용(VAT-)": "{:,.0f}"}), use_container_width=True)
-        else:
-            st.info("CHANNEL_COST 시트에 데이터가 없습니다.")
-
-        st.markdown("### 📦 품목군별 공헌이익")
         temp_df = df.copy()
         temp_df["물류비"] = 0.0
 
@@ -1921,12 +1873,10 @@ if "공헌이익분석(통합)" in tab_map:
                 ad_amt = st.session_state["ad_cost_monthly"].get((ig, m), 0)
                 if ad_amt <= 0:
                     continue
-                # 분모: 해당 품목군 국내 채널 매출만
                 ig_total_mask  = (temp_df["출고년월"] == m) & (temp_df["품목군"] == ig) & (temp_df["국내여부"] == "국내")
                 ig_total_sales = temp_df.loc[ig_total_mask, "품목별매출(VAT제외)"].sum()
                 if ig_total_sales <= 0:
                     continue
-                # 배분 대상: 해당 품목군 + 국내 행만
                 ratio = temp_df.loc[ig_total_mask, "품목별매출(VAT제외)"] / ig_total_sales
                 temp_df.loc[ig_total_mask, "광고비"] = ratio * ad_amt
 
@@ -1945,14 +1895,11 @@ if "공헌이익분석(통합)" in tab_map:
         )
         product_contrib["비용"] = 0.0
 
-        # [수정] CHANNEL_COST 비용: 거래처명 → 담당부서 매핑 후 부서별 배분
         _ch_dept_map = st.session_state.get("channel_dept_map", {})
         for (ym, ch, ig), amt in st.session_state["channel_cost"].items():
             if ym not in selected_months or ch not in selected_channel_groups:
                 continue
-            # 해당 거래처의 담당부서 확인 — 매핑 없으면 ch 그대로(폴백)
             _ch_dept = _ch_dept_map.get(ch, "")
-            # temp_df 내 해당 부서+품목군 매출 비율로 품목군별 배분
             mask = product_contrib["품목군"] == ig
             if mask.any():
                 product_contrib.loc[mask, "비용"] += amt
@@ -1966,13 +1913,15 @@ if "공헌이익분석(통합)" in tab_map:
             - product_contrib["비용"]
         )
         product_contrib["공헌이익률"] = safe_divide(product_contrib["공헌이익"], product_contrib["품목별매출(VAT제외)"])
-        # 내부 레이블 행 제외 (표시용)
         product_contrib = product_contrib[~product_contrib["품목군"].isin(["__매출조정__", "__미분류__"])]
         product_contrib = product_contrib[[
             "품목군", "총내품출고수량", "품목별매출(VAT제외)",
             "원가총액", "매출총이익", "채널수수료",
             "물류비", "광고비", "비용", "공헌이익", "공헌이익률"
         ]]
+
+        # ── 1. 품목군별 공헌이익 (항상 열림) ──
+        st.markdown("### 📦 품목군별 공헌이익")
         st.dataframe(
             product_contrib.style.format({
                 "총내품출고수량": "{:,.0f}", "품목별매출(VAT제외)": "{:,.0f}",
@@ -1984,6 +1933,7 @@ if "공헌이익분석(통합)" in tab_map:
             use_container_width=True
         )
 
+        # ── 2. 채널별 공헌이익 (닫힘) ──
         with st.expander("🏪 채널별 공헌이익", expanded=False):
             channel_contrib = (
                 temp_df.groupby("거래처분류", as_index=False)[[
@@ -1996,7 +1946,6 @@ if "공헌이익분석(통합)" in tab_map:
             for (ym, ch, ig), amt in st.session_state["channel_cost"].items():
                 if ym not in selected_months:
                     continue
-                # 거래처명(ch)으로 직접 채널 행 찾기
                 mask = channel_contrib["거래처분류"] == ch
                 if mask.any():
                     channel_contrib.loc[mask, "비용"] += amt
@@ -2024,6 +1973,54 @@ if "공헌이익분석(통합)" in tab_map:
                 }),
                 use_container_width=True
             )
+
+        # ── 3. 부서별 월별 물류비 (닫힘) ──
+        with st.expander("🚚 부서별 월별 물류비", expanded=False):
+            _lt = st.session_state["logistics_table"]
+            if _lt:
+                _depts_all = sorted(set(dept for (dept, ym) in _lt.keys()))
+                _logistics_rows = []
+                for dept in _depts_all:
+                    row = {"부서": dept}
+                    for m in all_months:
+                        row[m] = _lt.get((dept, m), 0)
+                    _logistics_rows.append(row)
+                _logistics_display = pd.DataFrame(_logistics_rows).set_index("부서")
+                st.dataframe(_logistics_display.style.format("{:,.0f}"), use_container_width=True)
+            else:
+                st.info("COST_INPUT 시트에 물류비 데이터가 없습니다.")
+
+        # ── 4. 품목군별 광고비 (닫힘) ──
+        with st.expander("📢 품목군별 광고비", expanded=False):
+            ad_data = []
+            item_groups_ad = sorted(set(k[0] for k in st.session_state["ad_cost_monthly"].keys()))
+            for ig in item_groups_ad:
+                row = {"품목군": ig}
+                for m in all_months:
+                    row[m] = st.session_state["ad_cost_monthly"].get((ig, m), 0)
+                ad_data.append(row)
+            ad_df = pd.DataFrame(ad_data)
+            ad_mcols = [c for c in ad_df.columns if c != "품목군"]
+            st.dataframe(ad_df.style.format({m: "{:,.0f}" for m in ad_mcols}), use_container_width=True)
+
+        # ── 5. 채널별 후정산 비용 (닫힘) ──
+        with st.expander("💸 채널별 후정산 비용", expanded=False):
+            if st.session_state["channel_cost"]:
+                _ch_dept_map_disp = st.session_state.get("channel_dept_map", {})
+                cc_rows = [
+                    {
+                        "년월": ym,
+                        "거래처명": ch,
+                        "담당부서": _ch_dept_map_disp.get(ch, "-"),
+                        "품목군": ig,
+                        "비용(VAT-)": amt,
+                    }
+                    for (ym, ch, ig), amt in st.session_state["channel_cost"].items()
+                ]
+                cc_df = pd.DataFrame(cc_rows).sort_values(["년월", "담당부서", "거래처명", "품목군"])
+                st.dataframe(cc_df.style.format({"비용(VAT-)": "{:,.0f}"}), use_container_width=True)
+            else:
+                st.info("CHANNEL_COST 시트에 데이터가 없습니다.")
 
 # ===================================
 # TAB 7: 다운로드
