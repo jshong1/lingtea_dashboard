@@ -1358,11 +1358,12 @@ if "주차별추이" in tab_map:
         wdf["연도주차"] = wdf["연도"].astype(str) + "-W" + wdf["주차_int"].astype(str).str.zfill(2)
 
         # [수정] x축 레이블: ISO 주차 → 해당 주의 월요일~일요일 날짜 범위로 변환
-        # 예) 2026-W14 → 26.03.30~26.04.05
+        # isocalendar() 기반이므로 %G-W%V-%u (ISO 8601) 포맷 사용
+        # 예) 2026-W16 → 26.04.13~26.04.19
         def week_to_date_range(yw: str) -> str:
             try:
                 year, w = yw.split("-W")
-                mon = datetime.strptime(f"{year}-W{w}-1", "%Y-W%W-%w")
+                mon = datetime.strptime(f"{year}-W{int(w):02d}-1", "%G-W%V-%u")
                 sun = mon + pd.Timedelta(days=6)
                 return f"{mon.strftime('%y.%m.%d')}~{sun.strftime('%y.%m.%d')}"
             except Exception:
@@ -2360,4 +2361,4 @@ if "제품별원가" in tab_map:
                         height=500
                     )
 
-st.success("🚀 Lingtea Dashboard v8.4 Ready")
+st.success("🚀 Lingtea Dashboard v8.5 Ready")
