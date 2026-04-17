@@ -1825,6 +1825,91 @@ def _render_contrib_tab(base_df, market_filter, tab_label, ad_apply):
             "공헌이익": "{:,.0f}", "공헌이익률": "{:.2%}",
         }), use_container_width=True)
 
+    # ── 월별 품목군별 공헌이익 (닫힘) ──
+    with st.expander("📅 월별 품목군별 공헌이익", expanded=False):
+        _month_ig_rows = []
+        for m in sorted(selected_months):
+            _m_mask = mdf["출고년월"] == m
+            _m_ig = mdf[_m_mask].groupby("품목군", as_index=False)[[
+                "총내품출고수량", "품목별매출(VAT제외)", "원가총액",
+                "매출총이익", "채널수수료", "물류비", "광고비"
+            ]].sum()
+            _m_ig["비용"] = 0.0
+            for (ym, ch, ig), amt in st.session_state["channel_cost"].items():
+                if ym != m:
+                    continue
+                if market_filter is not None and mdf[mdf["거래처분류"] == ch].empty:
+                    continue
+                _mask_ig = _m_ig["품목군"] == ig
+                if _mask_ig.any():
+                    _m_ig.loc[_mask_ig, "비용"] += amt
+            _m_ig["공헌이익"] = (
+                _m_ig["품목별매출(VAT제외)"] - _m_ig["원가총액"]
+                - _m_ig["채널수수료"] - _m_ig["물류비"] - _m_ig["광고비"] - _m_ig["비용"]
+            )
+            _m_ig["공헌이익률"] = safe_divide(_m_ig["공헌이익"], _m_ig["품목별매출(VAT제외)"])
+            _m_ig = _m_ig[~_m_ig["품목군"].isin(["__매출조정__", "__미분류__"])]
+            _m_label = f"{int(m.split('-')[1]):02d}월" if "-" in str(m) else str(m)
+            _m_ig.insert(0, "월", _m_label)
+            _month_ig_rows.append(_m_ig)
+        if _month_ig_rows:
+            _monthly_ig_df = pd.concat(_month_ig_rows, ignore_index=True)
+            _monthly_ig_df = _monthly_ig_df[[
+                "월", "품목군", "총내품출고수량", "품목별매출(VAT제외)",
+                "원가총액", "매출총이익", "채널수수료", "물류비", "광고비",
+                "비용", "공헌이익", "공헌이익률"
+            ]]
+            st.dataframe(_monthly_ig_df.style.format({
+                "총내품출고수량": "{:,.0f}", "품목별매출(VAT제외)": "{:,.0f}",
+                "원가총액": "{:,.0f}", "매출총이익": "{:,.0f}", "채널수수료": "{:,.0f}",
+                "물류비": "{:,.0f}", "광고비": "{:,.0f}", "비용": "{:,.0f}",
+                "공헌이익": "{:,.0f}", "공헌이익률": "{:.2%}",
+            }), use_container_width=True)
+        else:
+            st.info("월별 품목군별 공헌이익 데이터가 없습니다.")
+
+    # ── 월별 채널별 공헌이익 (닫힘) ──
+    with st.expander("📅 월별 채널별 공헌이익", expanded=False):
+        _month_ch_rows = []
+        for m in sorted(selected_months):
+            _m_mask = mdf["출고년월"] == m
+            _m_cc = mdf[_m_mask].groupby("거래처분류", as_index=False)[[
+                "총내품출고수량", "품목별매출(VAT제외)", "원가총액",
+                "매출총이익", "채널수수료", "물류비", "광고비"
+            ]].sum()
+            _m_cc["비용"] = 0.0
+            for (ym, ch, ig), amt in st.session_state["channel_cost"].items():
+                if ym != m:
+                    continue
+                if market_filter is not None and mdf[mdf["거래처분류"] == ch].empty:
+                    continue
+                _mask_ch = _m_cc["거래처분류"] == ch
+                if _mask_ch.any():
+                    _m_cc.loc[_mask_ch, "비용"] += amt
+            _m_cc["공헌이익"] = (
+                _m_cc["품목별매출(VAT제외)"] - _m_cc["원가총액"]
+                - _m_cc["채널수수료"] - _m_cc["물류비"] - _m_cc["광고비"] - _m_cc["비용"]
+            )
+            _m_cc["공헌이익률"] = safe_divide(_m_cc["공헌이익"], _m_cc["품목별매출(VAT제외)"])
+            _m_label = f"{int(m.split('-')[1]):02d}월" if "-" in str(m) else str(m)
+            _m_cc.insert(0, "월", _m_label)
+            _month_ch_rows.append(_m_cc)
+        if _month_ch_rows:
+            _monthly_ch_df = pd.concat(_month_ch_rows, ignore_index=True)
+            _monthly_ch_df = _monthly_ch_df[[
+                "월", "거래처분류", "총내품출고수량", "품목별매출(VAT제외)",
+                "원가총액", "매출총이익", "채널수수료", "물류비", "광고비",
+                "비용", "공헌이익", "공헌이익률"
+            ]]
+            st.dataframe(_monthly_ch_df.style.format({
+                "총내품출고수량": "{:,.0f}", "품목별매출(VAT제외)": "{:,.0f}",
+                "원가총액": "{:,.0f}", "매출총이익": "{:,.0f}", "채널수수료": "{:,.0f}",
+                "물류비": "{:,.0f}", "광고비": "{:,.0f}", "비용": "{:,.0f}",
+                "공헌이익": "{:,.0f}", "공헌이익률": "{:.2%}",
+            }), use_container_width=True)
+        else:
+            st.info("월별 채널별 공헌이익 데이터가 없습니다.")
+
 
 if "공헌이익분석(국내)" in tab_map:
     with tab_map["공헌이익분석(국내)"]:
@@ -1974,6 +2059,87 @@ if "공헌이익분석(통합)" in tab_map:
                 }),
                 use_container_width=True
             )
+
+        # ── 2-1. 월별 품목군별 공헌이익 (닫힘) ──
+        with st.expander("📅 월별 품목군별 공헌이익", expanded=False):
+            _t_month_ig_rows = []
+            for m in sorted(selected_months):
+                _t_m_mask = temp_df["출고년월"] == m
+                _t_m_ig = temp_df[_t_m_mask].groupby("품목군", as_index=False)[[
+                    "총내품출고수량", "품목별매출(VAT제외)", "원가총액",
+                    "매출총이익", "채널수수료", "물류비", "광고비"
+                ]].sum()
+                _t_m_ig["비용"] = 0.0
+                for (ym, ch, ig), amt in st.session_state["channel_cost"].items():
+                    if ym != m:
+                        continue
+                    _t_mask_ig = _t_m_ig["품목군"] == ig
+                    if _t_mask_ig.any():
+                        _t_m_ig.loc[_t_mask_ig, "비용"] += amt
+                _t_m_ig["공헌이익"] = (
+                    _t_m_ig["품목별매출(VAT제외)"] - _t_m_ig["원가총액"]
+                    - _t_m_ig["채널수수료"] - _t_m_ig["물류비"] - _t_m_ig["광고비"] - _t_m_ig["비용"]
+                )
+                _t_m_ig["공헌이익률"] = safe_divide(_t_m_ig["공헌이익"], _t_m_ig["품목별매출(VAT제외)"])
+                _t_m_ig = _t_m_ig[~_t_m_ig["품목군"].isin(["__매출조정__", "__미분류__"])]
+                _t_m_label = f"{int(m.split('-')[1]):02d}월" if "-" in str(m) else str(m)
+                _t_m_ig.insert(0, "월", _t_m_label)
+                _t_month_ig_rows.append(_t_m_ig)
+            if _t_month_ig_rows:
+                _t_monthly_ig_df = pd.concat(_t_month_ig_rows, ignore_index=True)
+                _t_monthly_ig_df = _t_monthly_ig_df[[
+                    "월", "품목군", "총내품출고수량", "품목별매출(VAT제외)",
+                    "원가총액", "매출총이익", "채널수수료", "물류비", "광고비",
+                    "비용", "공헌이익", "공헌이익률"
+                ]]
+                st.dataframe(_t_monthly_ig_df.style.format({
+                    "총내품출고수량": "{:,.0f}", "품목별매출(VAT제외)": "{:,.0f}",
+                    "원가총액": "{:,.0f}", "매출총이익": "{:,.0f}", "채널수수료": "{:,.0f}",
+                    "물류비": "{:,.0f}", "광고비": "{:,.0f}", "비용": "{:,.0f}",
+                    "공헌이익": "{:,.0f}", "공헌이익률": "{:.2%}",
+                }), use_container_width=True)
+            else:
+                st.info("월별 품목군별 공헌이익 데이터가 없습니다.")
+
+        # ── 2-2. 월별 채널별 공헌이익 (닫힘) ──
+        with st.expander("📅 월별 채널별 공헌이익", expanded=False):
+            _t_month_ch_rows = []
+            for m in sorted(selected_months):
+                _t_m_mask = temp_df["출고년월"] == m
+                _t_m_cc = temp_df[_t_m_mask].groupby("거래처분류", as_index=False)[[
+                    "총내품출고수량", "품목별매출(VAT제외)", "원가총액",
+                    "매출총이익", "채널수수료", "물류비", "광고비"
+                ]].sum()
+                _t_m_cc["비용"] = 0.0
+                for (ym, ch, ig), amt in st.session_state["channel_cost"].items():
+                    if ym != m:
+                        continue
+                    _t_mask_ch = _t_m_cc["거래처분류"] == ch
+                    if _t_mask_ch.any():
+                        _t_m_cc.loc[_t_mask_ch, "비용"] += amt
+                _t_m_cc["공헌이익"] = (
+                    _t_m_cc["품목별매출(VAT제외)"] - _t_m_cc["원가총액"]
+                    - _t_m_cc["채널수수료"] - _t_m_cc["물류비"] - _t_m_cc["광고비"] - _t_m_cc["비용"]
+                )
+                _t_m_cc["공헌이익률"] = safe_divide(_t_m_cc["공헌이익"], _t_m_cc["품목별매출(VAT제외)"])
+                _t_m_label = f"{int(m.split('-')[1]):02d}월" if "-" in str(m) else str(m)
+                _t_m_cc.insert(0, "월", _t_m_label)
+                _t_month_ch_rows.append(_t_m_cc)
+            if _t_month_ch_rows:
+                _t_monthly_ch_df = pd.concat(_t_month_ch_rows, ignore_index=True)
+                _t_monthly_ch_df = _t_monthly_ch_df[[
+                    "월", "거래처분류", "총내품출고수량", "품목별매출(VAT제외)",
+                    "원가총액", "매출총이익", "채널수수료", "물류비", "광고비",
+                    "비용", "공헌이익", "공헌이익률"
+                ]]
+                st.dataframe(_t_monthly_ch_df.style.format({
+                    "총내품출고수량": "{:,.0f}", "품목별매출(VAT제외)": "{:,.0f}",
+                    "원가총액": "{:,.0f}", "매출총이익": "{:,.0f}", "채널수수료": "{:,.0f}",
+                    "물류비": "{:,.0f}", "광고비": "{:,.0f}", "비용": "{:,.0f}",
+                    "공헌이익": "{:,.0f}", "공헌이익률": "{:.2%}",
+                }), use_container_width=True)
+            else:
+                st.info("월별 채널별 공헌이익 데이터가 없습니다.")
 
         # ── 3. 부서별 월별 물류비 (닫힘) ──
         with st.expander("🚚 부서별 월별 물류비", expanded=False):
@@ -2361,4 +2527,4 @@ if "제품별원가" in tab_map:
                         height=500
                     )
 
-st.success("🚀 Lingtea Dashboard v8.5 Ready")
+st.success("🚀 Lingtea Dashboard v8.6 Ready")
