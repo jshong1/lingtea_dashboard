@@ -1,7 +1,8 @@
 import io
 import os
+import uuid
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import gspread
 import numpy as np
@@ -13,6 +14,7 @@ from dateutil.relativedelta import relativedelta
 from google.oauth2.service_account import Credentials
 import firebase_admin
 from firebase_admin import credentials, firestore, auth as firebase_auth
+from streamlit_cookies_manager import EncryptedCookieManager
 
 # -----------------------------------
 # 기본 설정
@@ -37,6 +39,17 @@ def init_firebase():
 
 init_firebase()
 db = firestore.client()
+
+# -----------------------------------
+# 쿠키 매니저 초기화 (암호화된 세션 쿠키)
+# secrets.toml에 [cookie] / password = "..." 필요
+# -----------------------------------
+cookies = EncryptedCookieManager(
+    prefix="lingtea_",
+    password=st.secrets["cookie"]["password"],
+)
+if not cookies.ready():
+    st.stop()
 
 # -----------------------------------
 # 로그인/회원가입 CSS
@@ -282,6 +295,47 @@ def delete_user(uid: str):
     db.collection("users").document(uid).delete()
 
 # -----------------------------------
+# Firestore 세션 관리 (쿠키 기반)
+# -----------------------------------
+SESSION_TTL_DAYS = 30
+
+def create_session(uid: str) -> str:
+    """랜덤 세션 토큰 생성 → Firestore sessions 컬렉션에 저장"""
+    token = str(uuid.uuid4())
+    expires_at = datetime.now() + timedelta(days=SESSION_TTL_DAYS)
+    db.collection("sessions").document(token).set({
+        "uid": uid,
+        "created_at": datetime.now().isoformat(),
+        "expires_at": expires_at.isoformat(),
+    })
+    return token
+
+def get_session(token: str):
+    """토큰으로 세션 조회. 만료/없으면 None 반환"""
+    if not token:
+        return None
+    try:
+        doc = db.collection("sessions").document(token).get()
+        if not doc.exists:
+            return None
+        data = doc.to_dict()
+        expires_at = datetime.fromisoformat(data["expires_at"])
+        if datetime.now() > expires_at:
+            db.collection("sessions").document(token).delete()
+            return None
+        return data
+    except Exception:
+        return None
+
+def delete_session(token: str):
+    """세션 토큰 삭제 (로그아웃)"""
+    if token:
+        try:
+            db.collection("sessions").document(token).delete()
+        except Exception:
+            pass
+
+# -----------------------------------
 # 로그인 처리
 # -----------------------------------
 def handle_login(email: str, password: str):
@@ -320,8 +374,10 @@ def handle_login(email: str, password: str):
     st.session_state["role"]      = user_doc.get("role", "user")
     st.session_state["id_token"]  = id_token
     st.session_state["tabs_perm"] = user_doc.get("tabs", DEFAULT_USER_TABS.copy())
-    # 쿠키에 저장 (새로고침 후 복원용)
-    st.query_params["sid"] = uid
+    # 쿠키 기반 세션 저장 (URL에 인증정보 노출 없음)
+    _token = create_session(uid)
+    cookies["session_token"] = _token
+    cookies.save()
     return True, "ok"
 
 # -----------------------------------
@@ -442,31 +498,37 @@ def show_login():
                 st.rerun()
 
 # -----------------------------------
-# 세션 복원 (쿠키 → session_state)
+# 세션 복원 (쿠키 → Firestore 검증 → session_state)
+# URL에 인증정보 없음 — 쿠키의 session_token으로만 복원
 # -----------------------------------
 if "logged_in" not in st.session_state:
     st.session_state["logged_in"] = False
 
-# -----------------------------------
-# query_params 기반 세션 복원 (새로고침 유지)
-# 로그인 시 uid를 ?sid=에 저장 → 새로고침 후 Firestore에서 복원
-# -----------------------------------
 if not st.session_state["logged_in"]:
-    _sid = st.query_params.get("sid", "")
-    if _sid:
+    _cookie_token = cookies.get("session_token", "")
+    if _cookie_token:
         try:
-            user_doc = get_user_doc(_sid)
-            if user_doc and not user_doc.get("disabled", False):
-                _email = user_doc.get("email", "")
-                admin_emails = list(st.secrets["auth"]["admin_emails"])
-                role = "admin" if _email in admin_emails else user_doc.get("role", "user")
-                st.session_state["logged_in"] = True
-                st.session_state["uid"]       = _sid
-                st.session_state["email"]     = _email
-                st.session_state["role"]      = role
-                st.session_state["tabs_perm"] = user_doc.get("tabs", DEFAULT_USER_TABS.copy())
+            _session_data = get_session(_cookie_token)
+            if _session_data:
+                _uid = _session_data["uid"]
+                user_doc = get_user_doc(_uid)
+                if user_doc and not user_doc.get("disabled", False):
+                    _email = user_doc.get("email", "")
+                    admin_emails = list(st.secrets["auth"]["admin_emails"])
+                    role = "admin" if _email in admin_emails else user_doc.get("role", "user")
+                    st.session_state["logged_in"] = True
+                    st.session_state["uid"]       = _uid
+                    st.session_state["email"]     = _email
+                    st.session_state["role"]      = role
+                    st.session_state["tabs_perm"] = user_doc.get("tabs", DEFAULT_USER_TABS.copy())
+                else:
+                    # 비활성화된 계정 → 세션 삭제
+                    delete_session(_cookie_token)
+                    cookies["session_token"] = ""
+                    cookies.save()
         except Exception:
-            st.query_params.clear()
+            cookies["session_token"] = ""
+            cookies.save()
 
 if not st.session_state["logged_in"]:
     show_login()
@@ -480,8 +542,11 @@ with st.sidebar:
     role_badge = "🔑 관리자" if st.session_state["role"] == "admin" else "👤 사용자"
     st.caption(role_badge)
     if st.button("로그아웃", use_container_width=True):
-        # 쿠키 삭제
-        st.query_params.clear()
+        # Firestore 세션 삭제 + 쿠키 삭제
+        _logout_token = cookies.get("session_token", "")
+        delete_session(_logout_token)
+        cookies["session_token"] = ""
+        cookies.save()
         for k in ["logged_in", "uid", "email", "role", "id_token", "tabs_perm",
                   "logistics_table", "ad_cost_monthly", "channel_cost", "channel_dept_map"]:
             st.session_state.pop(k, None)
@@ -2527,4 +2592,4 @@ if "제품별원가" in tab_map:
                         height=500
                     )
 
-st.success("🚀 Lingtea Dashboard v8.6 Ready")
+st.success("🚀 Lingtea Dashboard v8.7 Ready")
