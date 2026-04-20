@@ -23,7 +23,7 @@ st.set_page_config(page_title="Lingtea Dashboard", layout="wide")
 
 SHEET_ID = "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
 
-ALL_TABS = ["월별추이", "주차별추이", "채널분석", "제품분석", "공헌이익분석(통합)", "공헌이익분석(국내)", "공헌이익분석(해외)", "제품별원가", "다운로드"]
+ALL_TABS = ["월별추이", "주차별추이", "채널분석", "제품분석", "공헌이익분석(통합)", "공헌이익분석(국내)", "공헌이익분석(해외)", "제품별원가", "AI분석", "다운로드"]
 
 DEFAULT_USER_TABS = {t: False for t in ALL_TABS}
 DEFAULT_ADMIN_TABS = {t: True for t in ALL_TABS}
@@ -1177,6 +1177,7 @@ tab_defs = {
     "공헌이익분석(해외)": "🌏 공헌이익(해외)",
     "공헌이익분석(통합)": "📋 공헌이익(통합)",
     "제품별원가":       "💰 제품별 원가",
+    "AI분석":           "🤖 AI 분석",
     "다운로드":         "📥 다운로드",
 }
 
@@ -2255,6 +2256,217 @@ if "공헌이익분석(통합)" in tab_map:
                 st.info("CHANNEL_COST 시트에 데이터가 없습니다.")
 
 # ===================================
+# TAB AI: AI 분석
+# ===================================
+if "AI분석" in tab_map:
+    with tab_map["AI분석"]:
+        st.subheader("🤖 AI 분석")
+
+        # ── 공통 함수 ──
+        def build_ai_context(fdf):
+            lines = []
+            months_list = sorted(fdf["출고년월"].dropna().unique().tolist())
+            lines.append(f"## 분석 기간: {months_list[0]} ~ {months_list[-1]} ({len(months_list)}개월)")
+            total_s  = fdf["품목별매출(VAT제외)"].sum()
+            total_q  = fdf["총내품출고수량"].sum()
+            total_gp = fdf["매출총이익"].sum()
+            total_ci = fdf["공헌이익"].sum()
+            lines.append("\n## 전체 KPI")
+            lines.append(f"- 총매출(VAT제외): {total_s:,.0f}원")
+            lines.append(f"- 총출고수량: {total_q:,.0f}")
+            lines.append((f"- 매출총이익: {total_gp:,.0f}원 ({total_gp/total_s*100:.1f}%)") if total_s else "- 매출총이익: 0")
+            lines.append((f"- 공헌이익: {total_ci:,.0f}원 ({total_ci/total_s*100:.1f}%)") if total_s else "- 공헌이익: 0")
+            monthly = fdf.groupby("출고년월")[["품목별매출(VAT제외)", "공헌이익"]].sum().reset_index().sort_values("출고년월")
+            lines.append("\n## 월별 매출 및 공헌이익 추이")
+            for _, row in monthly.iterrows():
+                s = row["품목별매출(VAT제외)"]; ci = row["공헌이익"]
+                lines.append(f"- {row['출고년월']}: 매출 {s:,.0f}원 / 공헌이익 {ci:,.0f}원 ({ci/s*100:.1f}%)" if s else f"- {row['출고년월']}: 매출 0")
+            ch = fdf.groupby("거래처분류")[["품목별매출(VAT제외)", "공헌이익"]].sum().sort_values("품목별매출(VAT제외)", ascending=False).head(10)
+            lines.append("\n## 채널별 매출·공헌이익 (상위 10개)")
+            for ch_name, row in ch.iterrows():
+                s = row["품목별매출(VAT제외)"]; ci = row["공헌이익"]
+                lines.append(f"- {ch_name}: 매출 {s:,.0f}원 / 공헌이익 {ci:,.0f}원 ({ci/s*100:.1f}%)" if s else f"- {ch_name}: 매출 0")
+            ig = fdf.groupby("품목군")[["품목별매출(VAT제외)", "공헌이익", "총내품출고수량"]].sum()
+            ig = ig[~ig.index.isin(["__매출조정__", "__미분류__"])].sort_values("품목별매출(VAT제외)", ascending=False)
+            lines.append("\n## 품목군별 매출·공헌이익")
+            for ig_name, row in ig.iterrows():
+                s = row["품목별매출(VAT제외)"]; ci = row["공헌이익"]
+                lines.append(f"- {ig_name}: 매출 {s:,.0f}원 / 공헌이익 {ci:,.0f}원 ({ci/s*100:.1f}%) / 출고 {row['총내품출고수량']:,.0f}" if s else f"- {ig_name}: 매출 0")
+            mkt = fdf.groupby("국내여부")[["품목별매출(VAT제외)", "공헌이익"]].sum()
+            lines.append("\n## 국내/해외 구분")
+            for mkt_name, row in mkt.iterrows():
+                s = row["품목별매출(VAT제외)"]; ci = row["공헌이익"]
+                lines.append(f"- {mkt_name}: 매출 {s:,.0f}원 / 공헌이익 {ci:,.0f}원 ({ci/s*100:.1f}%)" if s else f"- {mkt_name}: 매출 0")
+            return "\n".join(lines)
+
+        def call_claude_api(system_prompt, messages, max_tokens=2048):
+            api_key = st.secrets["anthropic"]["api_key"]
+            resp = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-sonnet-4-5",
+                    "max_tokens": max_tokens,
+                    "system": system_prompt,
+                    "messages": messages,
+                },
+                timeout=60,
+            )
+            if resp.status_code != 200:
+                raise Exception(f"API 오류 {resp.status_code}: {resp.text}")
+            return resp.json()["content"][0]["text"]
+
+        # ── 컨텍스트 캐시 (필터 바뀔 때마다 초기화) ──
+        _ctx_key = f"ai_ctx_{hash(str(sorted(selected_months)))}_{hash(str(sorted(selected_channel_groups)))}"
+        if st.session_state.get("ai_context_key") != _ctx_key:
+            st.session_state["ai_context_key"]  = _ctx_key
+            st.session_state["ai_context"]       = build_ai_context(filtered_df)
+            st.session_state["ai_chat_history"]  = []
+            st.session_state["ai_auto_report"]   = None
+
+        _ctx = st.session_state["ai_context"]
+
+        # 데이터 컨텍스트 포함 system prompt (종합분석 + 채팅 공용)
+        _system_with_data = f"""당신은 링티(Lingtea) 비즈니스 데이터 분석 전문가입니다.
+아래는 현재 대시보드 필터 기준으로 집계된 실제 판매 데이터입니다.
+
+{_ctx}
+
+위 데이터를 바탕으로 사용자의 질문에 답변하거나 분석을 제공하세요.
+- 숫자는 구체적으로 언급하고 변화율·비율을 함께 제시하세요.
+- 문제점과 기회 요인을 균형 있게 제시하세요.
+- 한국어로 답변하세요.
+- 마크다운 형식으로 구조화해서 작성하세요."""
+
+        # 데이터 컨텍스트 없는 system prompt (순수 질문용)
+        _system_no_data = """당신은 비즈니스·마케팅·데이터 분석 전문가입니다.
+사용자의 질문에 친절하고 명확하게 답변하세요.
+- 한국어로 답변하세요.
+- 마크다운 형식으로 구조화해서 작성하세요."""
+
+        st.divider()
+
+        # ══════════════════════════════════════
+        # 섹션 1: 💬 자유 질문 채팅
+        # ══════════════════════════════════════
+        st.markdown("### 💬 AI에게 직접 물어보기")
+        st.caption("대시보드 데이터와 무관하게 비즈니스·마케팅·분석 관련 무엇이든 질문하세요.")
+
+        # 채팅 히스토리 표시
+        for msg in st.session_state.get("ai_chat_history", []):
+            with st.chat_message(msg["role"]):
+                st.markdown(msg["content"])
+
+        user_input = st.chat_input("궁금한 점을 입력하세요...")
+        if "ai_pending_question" in st.session_state:
+            user_input = st.session_state.pop("ai_pending_question")
+
+        if user_input:
+            with st.chat_message("user"):
+                st.markdown(user_input)
+            st.session_state["ai_chat_history"].append({"role": "user", "content": user_input})
+            with st.chat_message("assistant"):
+                with st.spinner("답변 생성 중..."):
+                    try:
+                        recent_history = st.session_state["ai_chat_history"][-10:]
+                        answer = call_claude_api(_system_no_data, recent_history, max_tokens=1024)
+                        st.markdown(answer)
+                        st.session_state["ai_chat_history"].append({"role": "assistant", "content": answer})
+                    except Exception as e:
+                        err_msg = f"오류가 발생했습니다: {e}"
+                        st.error(err_msg)
+                        st.session_state["ai_chat_history"].append({"role": "assistant", "content": err_msg})
+
+        if st.session_state.get("ai_chat_history"):
+            if st.button("🗑️ 대화 초기화", key="clear_chat"):
+                st.session_state["ai_chat_history"] = []
+                st.rerun()
+
+        st.divider()
+
+        # ══════════════════════════════════════
+        # 섹션 2: 📋 종합 분석
+        # ══════════════════════════════════════
+        st.markdown("### 📋 종합 분석")
+
+        # 종합 분석 미리보기 (버튼 누르기 전 항상 표시)
+        st.markdown("""
+<div style="background:#F8F6F2; border:1px solid #E8E4DC; border-radius:12px; padding:20px 24px; margin-bottom:16px;">
+<p style="font-size:13px; color:#7A6E5A; margin:0 0 12px 0; font-weight:600;">📌 종합 분석 버튼을 누르면 아래 항목들이 생성됩니다</p>
+<table style="width:100%; border-collapse:collapse; font-size:13px; color:#3A3530;">
+<tr style="border-bottom:1px solid #E8E4DC;">
+  <td style="padding:8px 12px; font-weight:600; width:30%;">📊 핵심 요약</td>
+  <td style="padding:8px 12px; color:#7A6E5A;">전체 기간 성과를 한 문장으로 평가 · 전월 대비 매출 증감률 · 공헌이익률 수준 진단</td>
+</tr>
+<tr style="border-bottom:1px solid #E8E4DC;">
+  <td style="padding:8px 12px; font-weight:600;">📈 매출 트렌드</td>
+  <td style="padding:8px 12px; color:#7A6E5A;">월별 매출 흐름 해석 · 이상치(급등/급락) 구간 짚기 · 계절성 패턴 언급</td>
+</tr>
+<tr style="border-bottom:1px solid #E8E4DC;">
+  <td style="padding:8px 12px; font-weight:600;">🏪 채널 분석</td>
+  <td style="padding:8px 12px; color:#7A6E5A;">매출 상위·하위 채널 · 공헌이익률 기준 효율 채널 vs 적자 채널 · 국내/해외 비중</td>
+</tr>
+<tr style="border-bottom:1px solid #E8E4DC;">
+  <td style="padding:8px 12px; font-weight:600;">📦 품목군 분석</td>
+  <td style="padding:8px 12px; color:#7A6E5A;">매출·공헌이익 기여도 높은 품목군 · 출고량 대비 수익성 낮은 품목군 경고</td>
+</tr>
+<tr style="border-bottom:1px solid #E8E4DC;">
+  <td style="padding:8px 12px; font-weight:600;">⚠️ 리스크 & 기회</td>
+  <td style="padding:8px 12px; color:#7A6E5A;">공헌이익 마이너스 채널/품목군 · 매출 집중도 리스크 · 성장 가능성 있는 채널</td>
+</tr>
+<tr>
+  <td style="padding:8px 12px; font-weight:600;">💡 추천 액션</td>
+  <td style="padding:8px 12px; color:#7A6E5A;">데이터 기반 구체적 액션 2~3가지 · 우선순위 채널/품목군 제안</td>
+</tr>
+</table>
+</div>
+""", unsafe_allow_html=True)
+
+        # 종합 분석 버튼
+        col_btn, col_reset, _ = st.columns([2, 1, 4])
+        with col_btn:
+            run_report = st.button("🚀 종합 분석 실행", use_container_width=True, type="primary")
+        with col_reset:
+            if st.session_state.get("ai_auto_report") and st.button("🔄 재생성", use_container_width=True):
+                st.session_state["ai_auto_report"] = None
+                st.rerun()
+
+        if run_report:
+            st.session_state["ai_auto_report"] = None
+
+        # 종합 분석 결과 표시
+        if run_report or st.session_state.get("ai_auto_report") == "__running__":
+            st.session_state["ai_auto_report"] = "__running__"
+            with st.spinner("AI가 전체 데이터를 종합 분석 중입니다... (15~30초 소요)"):
+                try:
+                    report = call_claude_api(
+                        _system_with_data,
+                        [{"role": "user", "content": (
+                            "현재 데이터를 종합 분석해서 다음 항목을 포함한 리포트를 작성해주세요:\n"
+                            "1. 📊 핵심 요약 (전체 성과 한 줄 평가, 주요 지표 수치 포함)\n"
+                            "2. 📈 주목할 매출 트렌드 (월별 변화, 이상치, 계절성)\n"
+                            "3. 🏪 채널 분석 (상위/하위 채널, 공헌이익 관점 효율성)\n"
+                            "4. 📦 품목군 분석 (기여도 높은/낮은 품목군, 수익성 진단)\n"
+                            "5. ⚠️ 리스크 & 기회 요인\n"
+                            "6. 💡 추천 액션 (구체적으로 2~3가지, 우선순위 포함)"
+                        )}],
+                        max_tokens=2048,
+                    )
+                    st.session_state["ai_auto_report"] = report
+                except Exception as e:
+                    st.error(f"AI 분석 중 오류가 발생했습니다: {e}")
+                    st.session_state["ai_auto_report"] = None
+
+        if st.session_state.get("ai_auto_report") and st.session_state["ai_auto_report"] != "__running__":
+            st.markdown("---")
+            st.markdown(st.session_state["ai_auto_report"])
+
+
+# ===================================
 # TAB 7: 다운로드
 # ===================================
 if "다운로드" in tab_map:
@@ -2592,4 +2804,4 @@ if "제품별원가" in tab_map:
                         height=500
                     )
 
-st.success("🚀 Lingtea Dashboard v8.7 Ready")
+st.success("🚀 Lingtea Dashboard v8.9 Ready")
