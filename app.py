@@ -77,7 +77,7 @@ st.set_page_config(page_title="Lingtea Dashboard", layout="wide")
 
 SHEET_ID = "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
 
-ALL_TABS = ["경영진요약", "월별추이", "주차별추이", "채널분석", "제품분석", "공헌이익분석(통합)", "공헌이익분석(국내)", "공헌이익분석(해외)", "제품별원가", "AI분석", "다운로드"]
+ALL_TABS = ["경영진요약", "월별추이", "주차별추이", "채널분석", "제품분석", "YoY분석", "공헌이익분석(통합)", "공헌이익분석(국내)", "공헌이익분석(해외)", "제품별원가", "AI분석", "다운로드"]
 
 DEFAULT_USER_TABS = {t: False for t in ALL_TABS}
 DEFAULT_ADMIN_TABS = {t: True for t in ALL_TABS}
@@ -88,6 +88,7 @@ tab_defs = {
     "주차별추이":       "📅 주차별 추이",
     "채널분석":         "🏪 채널 분석",
     "제품분석":         "📦 제품 분석",
+    "YoY분석":          "📊 YoY 분석",
     "공헌이익분석(국내)": "📊 공헌이익(국내)",
     "공헌이익분석(해외)": "🌏 공헌이익(해외)",
     "공헌이익분석(통합)": "📋 공헌이익(통합)",
@@ -2715,6 +2716,203 @@ if current_tab_key == "제품분석":
     prod_q_pivot = add_total_row(prod_q_pivot)
     prod_q_pivot = sort_pivot_by_last_month(prod_q_pivot, prod_q_mcols)
     st.dataframe(prod_q_pivot.style.format("{:,.0f}"), use_container_width=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ===================================
+# TAB: YoY 분석
+# ===================================
+if current_tab_key == "YoY분석":
+    st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
+    st.subheader("📊 YoY 성과 분석")
+    
+    # 1. 비교 모드 선택
+    yoy_mode = st.radio(
+        "비교 방식 선택",
+        ["전년 동월 비교", "누적(YTD) 비교", "기간 자유 선택"],
+        horizontal=True,
+        key="yoy_mode_selector"
+    )
+    
+    all_months = sorted(df["출고년월"].dropna().unique().tolist())
+    
+    target_df = pd.DataFrame()
+    base_df = pd.DataFrame()
+    target_label = ""
+    base_label = ""
+    
+    if yoy_mode == "전년 동월 비교":
+        col1, col2 = st.columns(2)
+        with col1:
+            sel_month = st.selectbox("비교 대상 월 선택 (Target)", all_months[::-1], index=0)
+        
+        # 전년 동월 계산
+        try:
+            target_dt = datetime.strptime(sel_month, "%Y-%m")
+            base_dt = target_dt - relativedelta(years=1)
+            base_month = base_dt.strftime("%Y-%m")
+        except:
+            base_month = None
+            
+        with col2:
+            st.info(f"기준 월 (Base): {base_month if base_month in all_months else '데이터 없음'}")
+            
+        target_df = df[df["출고년월"] == sel_month]
+        base_df = df[df["출고년월"] == base_month]
+        target_label = sel_month
+        base_label = base_month
+
+    elif yoy_mode == "누적(YTD) 비교":
+        sel_year = st.selectbox("연도 선택", sorted(list(set(df["출고년월"].str[:4])), reverse=True))
+        max_month_in_year = df[df["출고년월"].str.startswith(sel_year)]["출고년월"].max()
+        
+        year_months = sorted([m for m in all_months if m.startswith(sel_year)])
+        sel_end_month = st.select_slider("누적 종료월 선택", options=year_months, value=max_month_in_year)
+        
+        target_year = sel_year
+        base_year = str(int(sel_year)-1)
+        end_mm = sel_end_month.split("-")[1]
+        
+        target_mask = (df["출고년월"].str[:4] == target_year) & (df["출고년월"].str[5:7] <= end_mm)
+        base_mask = (df["출고년월"].str[:4] == base_year) & (df["출고년월"].str[5:7] <= end_mm)
+        
+        target_df = df[target_mask]
+        base_df = df[base_mask]
+        target_label = f"{target_year}-01 ~ {end_mm}"
+        base_label = f"{base_year}-01 ~ {end_mm}"
+
+    else: # 기간 자유 선택
+        st.info("비교하고 싶은 현재 기간을 선택하면, 자동으로 1년 전 동일 기간과 비교합니다.")
+        d_col1, d_col2 = st.columns(2)
+        with d_col1:
+            start_d = st.date_input("시작일", datetime.now() - timedelta(days=30))
+        with d_col2:
+            end_d = st.date_input("종료일", datetime.now())
+            
+        base_start = start_d - relativedelta(years=1)
+        base_end = end_d - relativedelta(years=1)
+        
+        st.caption(f"비교 기준 기간: {base_start} ~ {base_end}")
+        
+        df_tmp = df.copy()
+        df_tmp["출고일자_dt"] = pd.to_datetime(df_tmp["출고일자"], errors='coerce')
+        
+        target_df = df_tmp[(df_tmp["출고일자_dt"].dt.date >= start_d) & (df_tmp["출고일자_dt"].dt.date <= end_d)]
+        base_df = df_tmp[(df_tmp["출고일자_dt"].dt.date >= base_start) & (df_tmp["출고일자_dt"].dt.date <= base_end)]
+        target_label = f"{start_d}~{end_d}"
+        base_label = f"{base_start}~{base_end}"
+
+    if target_df.empty and base_df.empty:
+        st.warning("선택한 기간에 데이터가 없습니다.")
+    else:
+        # 공통 분석 데이터 생성
+        def get_agg(df):
+            return df.groupby("거래처분류")["품목별매출(VAT제외)"].sum().reset_index()
+
+        t_agg = get_agg(target_df).rename(columns={"품목별매출(VAT제외)": "현재 매출"})
+        b_agg = get_agg(base_df).rename(columns={"품목별매출(VAT제외)": "전년 매출"})
+        
+        merged = pd.merge(t_agg, b_agg, on="거래처분류", how="outer").fillna(0)
+        merged["증감액"] = merged["현재 매출"] - merged["전년 매출"]
+        merged["성장률"] = merged.apply(lambda x: (x["현재 매출"] - x["전년 매출"]) / x["전년 매출"] if x["전년 매출"] > 0 else (1.0 if x["현재 매출"] > 0 else 0), axis=1)
+        
+        # 상태 분류
+        merged["상태"] = "유지"
+        merged.loc[(merged["전년 매출"] == 0) & (merged["현재 매출"] > 0), "상태"] = "신규"
+        merged.loc[(merged["전년 매출"] > 0) & (merged["현재 매출"] == 0), "상태"] = "이탈"
+        
+        # KPI 섹션
+        t_total = merged["현재 매출"].sum()
+        b_total = merged["전년 매출"].sum()
+        total_diff = t_total - b_total
+        total_growth = (total_diff / b_total) if b_total > 0 else (1.0 if t_total > 0 else 0)
+        
+        k1, k2, k3 = st.columns(3)
+        with k1:
+            st.metric(f"현재 매출 ({target_label})", f"{t_total/1e8:.2f}억", f"{total_diff/1e8:+.2f}억")
+        with k2:
+            st.metric("전년 대비 성장률", f"{total_growth:.1%}")
+        with k3:
+            if not merged.empty:
+                top_ch_row = merged.sort_values("증감액", ascending=False).iloc[0]
+                st.metric("최대 기여 채널", top_ch_row["거래처분류"], f"{top_ch_row['증감액']/1e8:+.2f}억")
+
+        # 서브 탭 구성
+        sub_tab1, sub_tab2, sub_tab3, sub_tab4 = st.tabs(["📊 종합 분석", "✨ 신규 채널", "👋 이탈 채널", "🔗 유지 채널"])
+        
+        with sub_tab1:
+            # 폭포수 차트
+            st.markdown("#### 🌊 채널별 성과 기여도 (Waterfall)")
+            waterfall_data = merged[merged["증감액"] != 0].sort_values("증감액", ascending=False)
+            if not waterfall_data.empty:
+                # 상위 7개, 하위 3개, 나머지 '기타'
+                top_w = waterfall_data.head(7)
+                bot_w = waterfall_data.tail(3)
+                
+                # 중복 방지를 위한 처리
+                combined_ids = set(top_w.index) | set(bot_w.index)
+                others_w = waterfall_data.drop(index=list(combined_ids))
+                
+                w_labels = list(top_w["거래처분류"]) + ["기타"] + list(bot_w["거래처분류"])
+                w_values = list(top_w["증감액"]) + [others_w["증감액"].sum()] + list(bot_w["증감액"])
+                
+                fig_w = go.Figure(go.Waterfall(
+                    name="YoY", orientation="v",
+                    measure=["relative"] * len(w_labels),
+                    x=w_labels,
+                    textposition="outside",
+                    text=[f"{v/1e8:+.1f}억" for v in w_values],
+                    y=w_values,
+                    connector={"line": {"color": "rgb(63, 63, 63)"}},
+                ))
+                fig_w.update_layout(title=f"전년 대비 매출 변동 요인 ({base_label} -> {target_label})", showlegend=False)
+                st.plotly_chart(fig_w, use_container_width=True)
+            else:
+                st.info("변동 내역이 없습니다.")
+            
+            # 스캐터 차트
+            st.markdown("#### 🎯 성장성 vs 매출 규모 (유지 채널)")
+            retained_df = merged[merged["상태"] == "유지"].copy()
+            if not retained_df.empty:
+                fig_s = px.scatter(
+                    retained_df, x="전년 매출", y="성장률", text="거래처분류",
+                    size="현재 매출", color="성장률",
+                    color_continuous_scale="RdYlGn",
+                    labels={"전년 매출": "전년 매출액", "성장률": "성장률", "현재 매출": "현재 매출액"}
+                )
+                fig_s.update_traces(textposition='top center')
+                fig_s.add_hline(y=0, line_dash="dash", line_color="gray")
+                st.plotly_chart(fig_s, use_container_width=True)
+
+        def show_sub_table(m_df, title):
+            st.markdown(f"#### {title}")
+            display_df = m_df.copy()
+            if "현재 매출" in display_df.columns:
+                display_df = display_df.sort_values("현재 매출", ascending=False)
+            st.dataframe(
+                display_df.style.format({
+                    "현재 매출": "{:,.0f}",
+                    "전년 매출": "{:,.0f}",
+                    "증감액": "{:+,.0f}",
+                    "성장률": "{:.1%}"
+                }),
+                use_container_width=True
+            )
+
+        with sub_tab2:
+            new_df = merged[merged["상태"] == "신규"]
+            if new_df.empty: st.info("신규 채널이 없습니다.")
+            else: show_sub_table(new_df[["거래처분월분류" if "거래처분월분류" in new_df.columns else "거래처분류", "현재 매출"]], "신규 진입 채널 실적")
+            
+        with sub_tab3:
+            exit_df = merged[merged["상태"] == "이탈"]
+            if exit_df.empty: st.info("이탈 채널이 없습니다.")
+            else: show_sub_table(exit_df[["거래처분류", "전년 매출"]], "이탈 채널 과거 실적")
+            
+        with sub_tab4:
+            ret_df = merged[merged["상태"] == "유지"]
+            if ret_df.empty: st.info("유지 중인 채널이 없습니다.")
+            else: show_sub_table(ret_df[["거래처분류", "전년 매출", "현재 매출", "증감액", "성장률"]], "유지 채널 성과 비교")
+
     st.markdown('</div>', unsafe_allow_html=True)
 
 # ===================================
