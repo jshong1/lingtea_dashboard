@@ -3654,6 +3654,10 @@ if current_tab_key == "확정비교":
             fin_item_summary.columns = ["품목", "확정_매출"]
             
             comp_item_df = pd.merge(pre_item_summary, fin_item_summary, on="품목", how="outer").fillna(0)
+            
+            # "매출조정" 품목 제외
+            comp_item_df = comp_item_df[comp_item_df["품목"].astype(str).str.strip() != "매출조정"].copy()
+            
             comp_item_df["매출오차(Δ)"] = comp_item_df["확정_매출"] - comp_item_df["가집계_매출"]
             comp_item_df["abs_diff"] = comp_item_df["매출오차(Δ)"].abs()
             
