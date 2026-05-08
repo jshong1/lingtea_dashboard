@@ -3690,51 +3690,21 @@ if current_tab_key == "확정비교":
             )
             st.plotly_chart(fig_item, use_container_width=True)
             
-            # --- AI 확정 비교 오차 분석 ---
-            st.divider()
-            st.markdown("#### ✨ AI 확정 비교 분석")
-            with st.expander("🤖 AI 확정 데이터 오차 분석 챗봇", expanded=False):
-                # 데이터 컨텍스트 생성
-                ctx_lines = [f"## 분석 기간: {_date_start_dt.strftime('%Y-%m')} ~ {max_fin_month}"]
-                ctx_lines.append(f"전체 가집계 매출: {total_pre_sales:,.0f}원")
-                ctx_lines.append(f"전체 확정마감 매출: {total_fin_sales:,.0f}원")
-                ctx_lines.append(f"전체 매출 오차(Δ): {total_diff:,.0f}원 ({total_var_rate:.2f}%)")
+            # --- 데이터 컨텍스트 생성 (글로벌 사이드바 AI용) ---
+            ctx_lines = [f"## 분석 기간: {_date_start_dt.strftime('%Y-%m')} ~ {max_fin_month}"]
+            ctx_lines.append(f"전체 가집계 매출: {total_pre_sales:,.0f}원")
+            ctx_lines.append(f"전체 확정마감 매출: {total_fin_sales:,.0f}원")
+            ctx_lines.append(f"전체 매출 오차(Δ): {total_diff:,.0f}원 ({total_var_rate:.2f}%)")
+            
+            ctx_lines.append("\n## 채널별 주요 오차 (절대값 기준 상위 15개)")
+            for _, r in ch_total_df.sort_values("abs_diff", ascending=False).head(15).iterrows():
+                ctx_lines.append(f"- {r['채널']}: 가집계 {r['가집계_매출']:,.0f}원 / 확정 {r['확정_매출']:,.0f}원 / 오차 {r['매출오차(Δ)']:,.0f}원")
                 
-                ctx_lines.append("\n## 채널별 주요 오차 (절대값 기준 상위 15개)")
-                for _, r in ch_total_df.sort_values("abs_diff", ascending=False).head(15).iterrows():
-                    ctx_lines.append(f"- {r['채널']}: 가집계 {r['가집계_매출']:,.0f}원 / 확정 {r['확정_매출']:,.0f}원 / 오차 {r['매출오차(Δ)']:,.0f}원")
-                    
-                ctx_lines.append("\n## 품목별 주요 오차 (절대값 기준 상위 15개)")
-                for _, r in comp_item_df.sort_values("abs_diff", ascending=False).head(15).iterrows():
-                    ctx_lines.append(f"- {r['품목']}: 가집계 {r['가집계_매출']:,.0f}원 / 확정 {r['확정_매출']:,.0f}원 / 오차 {r['매출오차(Δ)']:,.0f}원")
-                    
-                var_ctx = "\n".join(ctx_lines)
+            ctx_lines.append("\n## 품목별 주요 오차 (절대값 기준 상위 15개)")
+            for _, r in comp_item_df.sort_values("abs_diff", ascending=False).head(15).iterrows():
+                ctx_lines.append(f"- {r['품목']}: 가집계 {r['가집계_매출']:,.0f}원 / 확정 {r['확정_매출']:,.0f}원 / 오차 {r['매출오차(Δ)']:,.0f}원")
                 
-                # 캐시/상태 초기화
-                _var_ctx_key = f"var_ai_ctx_{hash(str(sorted(selected_months)))}_{hash(str(sorted(selected_channel_groups)))}"
-                if st.session_state.get("var_ai_context_key") != _var_ctx_key:
-                    st.session_state["var_ai_context_key"] = _var_ctx_key
-                    st.session_state["var_ai_chat_history"] = []
-                
-                for msg in st.session_state["var_ai_chat_history"]:
-                    st.chat_message(msg["role"]).write(msg["content"])
-                    
-                var_user_input = st.chat_input("확정 비교 분석에 대해 궁금한 점을 질문하세요... (예: 오차가 가장 심한 채널과 품목은?)", key="var_ai_chat")
-                if var_user_input:
-                    st.session_state["var_ai_chat_history"].append({"role": "user", "content": var_user_input})
-                    st.chat_message("user").write(var_user_input)
-                    
-                    sys_prompt = f"당신은 링티 데이터 분석가이자 회계 감사 전문가입니다. 아래는 가집계 매출과 ERP 확정 매출 간의 오차 분석 데이터입니다.\n\n{var_ctx}\n\n위 데이터를 기반으로 사용자의 질문에 한국어로 명확히 답하세요."
-                    msgs = [{"role": m["role"], "content": m["content"]} for m in st.session_state["var_ai_chat_history"]]
-                    
-                    with st.chat_message("assistant"):
-                        with st.spinner("분석 중..."):
-                            try:
-                                ans = call_claude_api(sys_prompt, msgs)
-                                st.write(ans)
-                                st.session_state["var_ai_chat_history"].append({"role": "assistant", "content": ans})
-                            except Exception as e:
-                                st.error(f"AI 호출 오류: {e}")
+            var_ctx = "\n".join(ctx_lines)
 
     st.markdown('</div>', unsafe_allow_html=True)
 
@@ -4423,5 +4393,57 @@ if current_tab_key == "제품별원가":
                     height=500
                 )
     st.markdown('</div>', unsafe_allow_html=True)
+
+# ===================================
+# GLOBAL SIDEBAR AI (현재 화면 동기화)
+# ===================================
+st.sidebar.markdown("---")
+show_global_ai = st.sidebar.toggle("✨ 현재 화면 AI 챗봇 열기", value=False, key="global_ai_toggle")
+
+if show_global_ai:
+    st.sidebar.markdown(f"**🤖 {current_tab_key} 전용 챗봇**")
+    
+    # 각 탭의 데이터를 기반으로 컨텍스트 수집
+    _local_ctx = "현재 화면에 대한 상세 분석 데이터가 부족합니다."
+    
+    if current_tab_key == "확정비교":
+        try:
+            _local_ctx = var_ctx
+        except NameError:
+            pass
+    elif current_tab_key in ["채널분석", "제품분석", "경영진요약"]:
+        _local_ctx = f"선택된 기간: {_date_start_dt} ~ {_date_end_dt}\n" + build_common_ai_context(filtered_df)
+    else:
+        # 기본 폴백
+        _local_ctx = build_common_ai_context(filtered_df)
+        
+    _sys_prompt = f"당신은 링티(Lingtea) 데이터 분석 전문가입니다. 아래는 사용자가 현재 대시보드에서 보고 있는 [{current_tab_key}] 화면의 데이터입니다.\n\n{_local_ctx}\n\n위 데이터를 기반으로 사용자의 질문에 한국어로 명확하게 답변하세요."
+    
+    _g_ctx_key = f"g_ai_{current_tab_key}_{hash(str(sorted(selected_months)))}_{hash(str(sorted(selected_channel_groups)))}"
+    
+    # 탭이나 필터가 변경되면 대화 기록 초기화
+    if st.session_state.get("global_ai_ctx_key") != _g_ctx_key:
+        st.session_state["global_ai_ctx_key"] = _g_ctx_key
+        st.session_state["global_ai_chat_history"] = []
+        
+    # 기존 대화 내역 출력
+    for msg in st.session_state["global_ai_chat_history"]:
+        st.sidebar.chat_message(msg["role"]).write(msg["content"])
+        
+    # 사용자 입력
+    g_user_input = st.sidebar.chat_input(f"{current_tab_key}에 대해 질문하세요...", key="global_ai_chat")
+    if g_user_input:
+        st.session_state["global_ai_chat_history"].append({"role": "user", "content": g_user_input})
+        st.sidebar.chat_message("user").write(g_user_input)
+        
+        msgs = [{"role": m["role"], "content": m["content"]} for m in st.session_state["global_ai_chat_history"]]
+        with st.sidebar.chat_message("assistant"):
+            with st.spinner("답변을 생성 중입니다..."):
+                try:
+                    ans = call_claude_api(_sys_prompt, msgs)
+                    st.write(ans)
+                    st.session_state["global_ai_chat_history"].append({"role": "assistant", "content": ans})
+                except Exception as e:
+                    st.error(f"AI 호출 오류: {e}")
 
 st.success("🚀 Lingtea Dashboard v10 Ready")
