@@ -77,7 +77,7 @@ st.set_page_config(page_title="Lingtea Dashboard", layout="wide")
 
 SHEET_ID = "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
 
-ALL_TABS = ["경영진요약", "월별추이", "주차별추이", "채널분석", "제품분석", "YoY분석", "공헌이익분석(통합)", "공헌이익분석(국내)", "공헌이익분석(해외)", "제품별원가", "AI분석", "다운로드"]
+ALL_TABS = ["경영진요약", "월별추이", "주차별추이", "채널분석", "제품분석", "YoY분석", "공헌이익분석(통합)", "공헌이익분석(국내)", "공헌이익분석(해외)", "제품별원가", "확정비교", "AI분석", "다운로드"]
 
 DEFAULT_USER_TABS = {t: False for t in ALL_TABS}
 DEFAULT_ADMIN_TABS = {t: True for t in ALL_TABS}
@@ -93,6 +93,7 @@ tab_defs = {
     "공헌이익분석(해외)": "🌏 공헌이익(해외)",
     "공헌이익분석(통합)": "📋 공헌이익(통합)",
     "제품별원가":       "💰 제품별 원가",
+    "확정비교":         "⚖️ 확정 비교 분석",
     "AI분석":           "🤖 AI 분석",
     "다운로드":         "📥 다운로드",
 }
@@ -903,6 +904,32 @@ def load_view_table(months=36):
     df["품목별매출(VAT제외)"] = pd.to_numeric(df["품목별매출(VAT제외)"], errors="coerce").fillna(0)
     
     return df
+
+@st.cache_data(ttl=600)
+def load_fin_view_table(months=36):
+    """PostgreSQL에서 fin_view_table(확정데이터) 조회"""
+    try:
+        DB_URL = st.secrets["DB_URL"]
+        conn = st.connection("postgresql", type="sql", url=DB_URL)
+        
+        if months >= 9999:
+            query = "SELECT * FROM fin_view_table"
+        else:
+            cutoff = datetime.today() - relativedelta(months=months)
+            cutoff_str = cutoff.strftime("%Y-%m-%d")
+            query = f"SELECT * FROM fin_view_table WHERE 출고일자 >= '{cutoff_str}'"
+        
+        df = conn.query(query)
+        
+        if not df.empty:
+            df["출고일자"] = pd.to_datetime(df["출고일자"], errors="coerce")
+            df["출고년월"] = df["출고년월"].astype(str).str.strip()
+            df["총내품출고수량"] = pd.to_numeric(df["총내품출고수량"], errors="coerce").fillna(0)
+            df["품목별매출(VAT제외)"] = pd.to_numeric(df["품목별매출(VAT제외)"], errors="coerce").fillna(0)
+        return df
+    except Exception as e:
+        st.error(f"확정 데이터(fin_view_table) 로드 중 오류: {e}")
+        return pd.DataFrame()
 
 @st.cache_data(ttl=600)
 def load_cost_master():
@@ -2873,11 +2900,16 @@ if current_tab_key == "YoY분석":
             st.markdown("#### 🎯 성장성 vs 매출 규모 (유지 채널)")
             retained_df = merged[merged["상태"] == "유지"].copy()
             if not retained_df.empty:
+                # [수정] Plotly scatter에서 size는 반드시 양수여야 하므로 음수(반품 등)는 0으로 처리
+                retained_df["display_size"] = retained_df["현재 매출"].clip(lower=0)
+                # [수정] 성장률이 무한대(inf)인 경우를 대비해 처리 (색상 스케일 오류 방지)
+                retained_df["성장률_plot"] = retained_df["성장률"].replace([np.inf, -np.inf], np.nan).fillna(0)
+                
                 fig_s = px.scatter(
-                    retained_df, x="전년 매출", y="성장률", text="거래처분류",
-                    size="현재 매출", color="성장률",
+                    retained_df, x="전년 매출", y="성장률_plot", text="거래처분류",
+                    size="display_size", color="성장률_plot",
                     color_continuous_scale="RdYlGn",
-                    labels={"전년 매출": "전년 매출액", "성장률": "성장률", "현재 매출": "현재 매출액"}
+                    labels={"전년 매출": "전년 매출액", "성장률_plot": "성장률", "display_size": "현재 매출액"}
                 )
                 fig_s.update_traces(textposition='top center')
                 fig_s.add_hline(y=0, line_dash="dash", line_color="gray")
@@ -3424,6 +3456,185 @@ if current_tab_key == "공헌이익분석(통합)":
 # ===================================
 # TAB AI: AI 분석
 # ===================================
+# ===================================
+# TAB: 확정 비교 분석 (Variance Analysis)
+# ===================================
+if current_tab_key == "확정비교":
+    st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
+    st.subheader("⚖️ 확정 비교 분석 (가집계 vs ERP 확정)")
+    st.caption("가집계(view_table)와 ERP 확정마감(fin_view_table) 데이터를 비교하여 오차를 분석합니다.")
+
+    # 확정 데이터 로드
+    fin_df_raw = load_fin_view_table(months=_load_months)
+    
+    if fin_df_raw.empty:
+        st.warning("확정마감 데이터(fin_view_table)가 없습니다. Supabase를 확인해주세요.")
+    else:
+        # 필터 적용 (가집계와 동일한 날짜 기준)
+        fin_df = fin_df_raw[
+            (fin_df_raw["출고일자"] >= _date_start_dt) &
+            (fin_df_raw["출고일자"] <= _date_end_dt)
+        ].copy()
+        
+        # 권한 필터 적용 (현재 사용자 권한에 맞게)
+        if st.session_state.get("user_role_type") == "부서기반":
+            _user_dept_name = st.session_state.get("user_dept")
+            # 가집계 데이터(filtered_df)에서 이미 필터링된 채널 목록 추출
+            valid_channels = filtered_df["거래처분류"].unique()
+            fin_df = fin_df[fin_df["거래처코드"].isin(valid_channels)]
+        
+        # 비교용 집계 (월별/채널별)
+        # 가집계 요약: '매출조정'이 포함된 데이터를 사용하기 위해 comparison_base_df 활용
+        comp_pre_df = comparison_base_df[
+            (comparison_base_df["출고일자"] >= _date_start_dt) &
+            (comparison_base_df["출고일자"] <= _date_end_dt)
+        ].copy()
+        
+        pre_summary = comp_pre_df.groupby(["출고년월", "거래처분류"])[["품목별매출(VAT제외)", "총내품출고수량"]].sum().reset_index()
+        pre_summary.columns = ["출고년월", "채널", "가집계_매출", "가집계_수량"]
+        
+        # 확정 요약
+        fin_summary = fin_df.groupby(["출고년월", "거래처코드"])[["품목별매출(VAT제외)", "총내품출고수량"]].sum().reset_index()
+        fin_summary.columns = ["출고년월", "채널", "확정_매출", "확정_수량"]
+        
+        # 머지
+        comp_df = pd.merge(pre_summary, fin_summary, on=["출고년월", "채널"], how="outer").fillna(0)
+        
+        # [추가] 확정 데이터가 존재하는 마지막 월까지만 데이터 필터링
+        # (예: 확정이 3월까지면, 가집계 4~5월 데이터는 비교에서 제외)
+        if not fin_summary.empty:
+            max_fin_month = fin_summary["출고년월"].max()
+            comp_df = comp_df[comp_df["출고년월"] <= max_fin_month].copy()
+            st.info(f"💡 현재 ERP 확정마감 데이터가 존재하는 **{max_fin_month}**까지만 비교 분석합니다.")
+        
+        # 오차 계산
+        comp_df["매출오차(Δ)"] = comp_df["확정_매출"] - comp_df["가집계_매출"]
+        comp_df["오차율(%)"] = safe_divide(comp_df["매출오차(Δ)"], comp_df["가집계_매출"]) * 100
+        
+        # KPI 카드
+        total_pre_sales = comp_df["가집계_매출"].sum()
+        total_fin_sales = comp_df["확정_매출"].sum()
+        total_diff = total_fin_sales - total_pre_sales
+        total_var_rate = safe_divide(total_diff, total_pre_sales) * 100
+        
+        v_c1, v_c2, v_c3 = st.columns(3)
+        v_c1.metric("전체 가집계 매출", _fmt_money(total_pre_sales))
+        v_c2.metric("전체 확정마감 매출", _fmt_money(total_fin_sales), delta=f"{total_diff:+,.0f}")
+        v_c3.metric("전체 오차율", f"{total_var_rate:+.2f}%", delta_color="inverse")
+        
+        st.divider()
+        
+        # 상세 비교 테이블 (월별 멀티헤더 구조)
+        st.markdown("#### 📊 채널별 상세 비교 (월별)")
+        
+        # 피벗 테이블 생성 (Index: 채널, Columns: [출고년월, 지표])
+        pivot_comp = comp_df.pivot(index="채널", columns="출고년월", values=["가집계_매출", "확정_매출", "매출오차(Δ)", "오차율(%)"])
+        
+        # 컬럼 순서 조정: (지표, 월) -> (월, 지표)
+        pivot_comp.columns = pivot_comp.columns.swaplevel(0, 1)
+        
+        # 월별 정렬 및 선택된 지표 순서 정의
+        sorted_months_comp = sort_month_cols(list(pivot_comp.columns.levels[0]))
+        metric_order = ["가집계_매출", "확정_매출", "매출오차(Δ)", "오차율(%)"]
+        
+        # 멀티인덱스 재배열
+        new_cols = []
+        for m in sorted_months_comp:
+            for met in metric_order:
+                if (m, met) in pivot_comp.columns:
+                    new_cols.append((m, met))
+        
+        pivot_comp = pivot_comp.reindex(columns=pd.MultiIndex.from_tuples(new_cols))
+        
+        # 합계 행 추가
+        pivot_comp.loc["[합계]"] = pivot_comp.sum()
+        # [합계] 행의 오차율은 다시 계산
+        for m in sorted_months_comp:
+            if (m, "가집계_매출") in pivot_comp.columns:
+                pre_tot = pivot_comp.loc["[합계]", (m, "가집계_매출")]
+                fin_tot = pivot_comp.loc["[합계]", (m, "확정_매출")]
+                diff_tot = fin_tot - pre_tot
+                pivot_comp.loc["[합계]", (m, "매출오차(Δ)")] = diff_tot
+                pivot_comp.loc["[합계]", (m, "오차율(%)")] = safe_divide(diff_tot, pre_tot) * 100
+
+        # 마지막 월 오차액 기준 내림차순 정렬 (합계 제외)
+        if sorted_months_comp:
+            last_m = sorted_months_comp[-1]
+            if (last_m, "매출오차(Δ)") in pivot_comp.columns:
+                data_part = pivot_comp.drop("[합계]").sort_values((last_m, "매출오차(Δ)"), key=abs, ascending=False)
+                pivot_comp = pd.concat([pivot_comp.loc[["[합계]"]], data_part])
+
+        # 포맷팅 설정
+        comp_fmt = {}
+        for col in pivot_comp.columns:
+            if col[1] == "오차율(%)":
+                comp_fmt[col] = "{:+.2f}%"
+            elif col[1] == "매출오차(Δ)":
+                comp_fmt[col] = "{:+,.0f}"
+            else:
+                comp_fmt[col] = "{:,.0f}"
+
+        if pivot_comp.empty:
+            st.info("비교할 데이터가 없습니다.")
+        else:
+            st.dataframe(pivot_comp.style.format(comp_fmt), use_container_width=True)
+            
+            # 차트: 주요 채널별 가집계 vs 확정 비교
+            st.divider()
+            c_col1, c_col2, c_col3 = st.columns([2, 2, 3])
+            with c_col1:
+                top_n_comp = st.selectbox("표시 채널 수", [10, 20, 30, 50], index=0, key="top_n_comp")
+            with c_col2:
+                show_full_amt = st.checkbox("전체 금액으로 표시", value=False, key="show_full_amt")
+            
+            st.markdown(f"#### 📈 주요 채널별 차이 시각화")
+            
+            # 차트용 데이터 (최근 월 기준 정렬된 comp_df 데이터 활용)
+            chart_df = comp_df.copy()
+            chart_df["abs_diff"] = chart_df["매출오차(Δ)"].abs()
+            top_channels_data = chart_df.sort_values("abs_diff", ascending=False).head(top_n_comp)
+            
+            # 라벨 포맷 함수
+            def format_label(val, full=False):
+                if full:
+                    return f"{val:,.0f}"
+                else:
+                    if abs(val) >= 1e8:
+                        return f"{val/1e8:.1f}억"
+                    elif abs(val) >= 1e4:
+                        return f"{val/1e4:,.0f}만"
+                    else:
+                        return f"{val:,.0f}"
+
+            fig_comp = go.Figure()
+            fig_comp.add_trace(go.Bar(
+                x=top_channels_data["채널"], 
+                y=top_channels_data["가집계_매출"],
+                name="가집계", 
+                marker_color="#94a3b8",
+                text=[format_label(v, show_full_amt) for v in top_channels_data["가집계_매출"]],
+                textposition='auto',
+            ))
+            fig_comp.add_trace(go.Bar(
+                x=top_channels_data["채널"], 
+                y=top_channels_data["확정_매출"],
+                name="확정마감", 
+                marker_color="#1e293b",
+                text=[format_label(v, show_full_amt) for v in top_channels_data["확정_매출"]],
+                textposition='auto',
+            ))
+            fig_comp.update_layout(
+                barmode='group',
+                height=500,
+                xaxis=dict(tickangle=-45),
+                yaxis=dict(title="매출액 (원)", tickformat=","), # Y축도 쉼표 표기
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                margin=dict(b=100)
+            )
+            st.plotly_chart(fig_comp, use_container_width=True)
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
 if current_tab_key == "AI분석":
     st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
     st.subheader("🤖 AI 분석")
@@ -4110,4 +4321,4 @@ if current_tab_key == "제품별원가":
                 )
     st.markdown('</div>', unsafe_allow_html=True)
 
-st.success("🚀 Lingtea Dashboard v9.2 Ready")
+st.success("🚀 Lingtea Dashboard v10 Ready")
