@@ -3470,18 +3470,19 @@ if current_tab_key == "확정비교":
     if fin_df_raw.empty:
         st.warning("확정마감 데이터(fin_view_table)가 없습니다. Supabase를 확인해주세요.")
     else:
-        # 필터 적용 (가집계와 동일한 날짜 기준)
+        # 필터 적용 (가집계와 동일한 날짜 + 채널 + 품목 기준)
         fin_df = fin_df_raw[
             (fin_df_raw["출고일자"] >= _date_start_dt) &
-            (fin_df_raw["출고일자"] <= _date_end_dt)
+            (fin_df_raw["출고일자"] <= _date_end_dt) &
+            (fin_df_raw["거래처코드"].isin(selected_channel_groups)) &
+            (fin_df_raw["내품상품명"].isin(selected_items))
         ].copy()
         
-        # 권한 필터 적용 (현재 사용자 권한에 맞게)
+        # 권한 필터 적용 (현재 사용자 권한에 맞게 - 부서기반 사용자의 경우 추가 제약)
         if st.session_state.get("user_role_type") == "부서기반":
-            _user_dept_name = st.session_state.get("user_dept")
-            # 가집계 데이터(filtered_df)에서 이미 필터링된 채널 목록 추출
-            valid_channels = filtered_df["거래처분류"].unique()
-            fin_df = fin_df[fin_df["거래처코드"].isin(valid_channels)]
+            # 이미 filtered_df(가집계)에서 걸러진 채널 목록으로 한번 더 교차 검증
+            valid_channels_auth = filtered_df["거래처분류"].unique()
+            fin_df = fin_df[fin_df["거래처코드"].isin(valid_channels_auth)]
         
         # 비교용 집계 (월별/채널별)
         # 가집계 요약: '매출조정'이 포함된 데이터를 사용하기 위해 comparison_base_df 활용
@@ -3632,6 +3633,54 @@ if current_tab_key == "확정비교":
                 margin=dict(b=100)
             )
             st.plotly_chart(fig_comp, use_container_width=True)
+            
+            # 차트: 주요 품목별 가집계 vs 확정 비교
+            st.divider()
+            i_col1, i_col2, i_col3 = st.columns([2, 2, 3])
+            with i_col1:
+                top_n_item = st.selectbox("표시 품목 수", [10, 20, 30, 50], index=0, key="top_n_item")
+            
+            st.markdown(f"#### 📈 주요 품목별 차이 시각화")
+            
+            # 품목별 집계 데이터 생성
+            pre_item_summary = comp_pre_df.groupby("내품상품명")[["품목별매출(VAT제외)"]].sum().reset_index()
+            pre_item_summary.columns = ["품목", "가집계_매출"]
+            
+            fin_item_summary = fin_df.groupby("내품상품명")[["품목별매출(VAT제외)"]].sum().reset_index()
+            fin_item_summary.columns = ["품목", "확정_매출"]
+            
+            comp_item_df = pd.merge(pre_item_summary, fin_item_summary, on="품목", how="outer").fillna(0)
+            comp_item_df["매출오차(Δ)"] = comp_item_df["확정_매출"] - comp_item_df["가집계_매출"]
+            comp_item_df["abs_diff"] = comp_item_df["매출오차(Δ)"].abs()
+            
+            top_items_data = comp_item_df.sort_values("abs_diff", ascending=False).head(top_n_item)
+            
+            fig_item = go.Figure()
+            fig_item.add_trace(go.Bar(
+                x=top_items_data["품목"], 
+                y=top_items_data["가집계_매출"],
+                name="가집계", 
+                marker_color="#94a3b8",
+                text=[format_label(v, show_full_amt) for v in top_items_data["가집계_매출"]],
+                textposition='auto',
+            ))
+            fig_item.add_trace(go.Bar(
+                x=top_items_data["품목"], 
+                y=top_items_data["확정_매출"],
+                name="확정마감", 
+                marker_color="#1e293b",
+                text=[format_label(v, show_full_amt) for v in top_items_data["확정_매출"]],
+                textposition='auto',
+            ))
+            fig_item.update_layout(
+                barmode='group',
+                height=500,
+                xaxis=dict(tickangle=-45),
+                yaxis=dict(title="매출액 (원)", tickformat=","),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                margin=dict(b=100)
+            )
+            st.plotly_chart(fig_item, use_container_width=True)
 
     st.markdown('</div>', unsafe_allow_html=True)
 
