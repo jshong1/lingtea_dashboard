@@ -94,7 +94,7 @@ tab_defs = {
     "공헌이익분석(통합)": "📋 공헌이익(통합)",
     "제품별원가":       "💰 제품별 원가",
     "확정비교":         "⚖️ 확정 비교 분석",
-    "AI분석":           "🤖 AI 분석",
+    "AI분석":           "✨ AI 분석",
     "다운로드":         "📥 다운로드",
 }
 
@@ -3686,7 +3686,7 @@ if current_tab_key == "확정비교":
 
 if current_tab_key == "AI분석":
     st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
-    st.subheader("🤖 AI 분석")
+    st.subheader("✨ AI 분석")
 
     # ── 컨텍스트 캐시 (필터 바뀔 때마다 초기화) ──
     _ctx_key = f"ai_ctx_{hash(str(sorted(selected_months)))}_{hash(str(sorted(selected_channel_groups)))}"
@@ -3719,9 +3719,9 @@ if current_tab_key == "AI분석":
     
 
     # ══════════════════════════════════════
-    # 섹션 1: 🤖 AI 데이터 챗봇
+    # 섹션 1: ✨ AI 데이터 챗봇
     # ══════════════════════════════════════
-    with st.expander("🤖 AI 데이터 챗봇 (데이터 기반 대화)", expanded=True):
+    with st.expander("✨ AI 데이터 챗봇 (데이터 기반 대화)", expanded=True):
         st.markdown("##### 💡 이런 질문은 어떠세요?")
         
         # 입력창 처리 (추천 질문 클릭 시 해당 값 사용을 위해 최상단 배치)
