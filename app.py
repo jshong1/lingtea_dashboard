@@ -3491,6 +3491,16 @@ if current_tab_key == "확정비교":
             (comparison_base_df["출고일자"] <= _date_end_dt)
         ].copy()
         
+        # [추가] 확정 데이터가 존재하는 마지막 월까지만 데이터 필터링 (가집계도 동일하게 맞춤)
+        if not fin_df.empty:
+            max_fin_month = fin_df["출고년월"].max()
+            fin_df = fin_df[fin_df["출고년월"] <= max_fin_month].copy()
+            comp_pre_df = comp_pre_df[comp_pre_df["출고년월"] <= max_fin_month].copy()
+            st.info(f"💡 현재 ERP 확정마감 데이터가 존재하는 **{max_fin_month}**까지만 비교 분석합니다.")
+        else:
+            st.warning("선택하신 조건에 해당하는 확정마감 데이터가 없습니다.")
+            st.stop()
+        
         pre_summary = comp_pre_df.groupby(["출고년월", "거래처분류"])[["품목별매출(VAT제외)", "총내품출고수량"]].sum().reset_index()
         pre_summary.columns = ["출고년월", "채널", "가집계_매출", "가집계_수량"]
         
@@ -3500,13 +3510,6 @@ if current_tab_key == "확정비교":
         
         # 머지
         comp_df = pd.merge(pre_summary, fin_summary, on=["출고년월", "채널"], how="outer").fillna(0)
-        
-        # [추가] 확정 데이터가 존재하는 마지막 월까지만 데이터 필터링
-        # (예: 확정이 3월까지면, 가집계 4~5월 데이터는 비교에서 제외)
-        if not fin_summary.empty:
-            max_fin_month = fin_summary["출고년월"].max()
-            comp_df = comp_df[comp_df["출고년월"] <= max_fin_month].copy()
-            st.info(f"💡 현재 ERP 확정마감 데이터가 존재하는 **{max_fin_month}**까지만 비교 분석합니다.")
         
         # 오차 계산
         comp_df["매출오차(Δ)"] = comp_df["확정_매출"] - comp_df["가집계_매출"]
@@ -3590,10 +3593,11 @@ if current_tab_key == "확정비교":
             
             st.markdown(f"#### 📈 주요 채널별 차이 시각화")
             
-            # 차트용 데이터 (최근 월 기준 정렬된 comp_df 데이터 활용)
-            chart_df = comp_df.copy()
-            chart_df["abs_diff"] = chart_df["매출오차(Δ)"].abs()
-            top_channels_data = chart_df.sort_values("abs_diff", ascending=False).head(top_n_comp)
+            # 채널별 총계 산출 (차트용)
+            ch_total_df = comp_df.groupby("채널")[["가집계_매출", "확정_매출"]].sum().reset_index()
+            ch_total_df["매출오차(Δ)"] = ch_total_df["확정_매출"] - ch_total_df["가집계_매출"]
+            ch_total_df["abs_diff"] = ch_total_df["매출오차(Δ)"].abs()
+            top_channels_data = ch_total_df.sort_values("abs_diff", ascending=False).head(top_n_comp)
             
             # 라벨 포맷 함수
             def format_label(val, full=False):
@@ -3681,6 +3685,52 @@ if current_tab_key == "확정비교":
                 margin=dict(b=100)
             )
             st.plotly_chart(fig_item, use_container_width=True)
+            
+            # --- AI 확정 비교 오차 분석 ---
+            st.divider()
+            st.markdown("#### ✨ AI 확정 비교 분석")
+            with st.expander("🤖 AI 확정 데이터 오차 분석 챗봇", expanded=False):
+                # 데이터 컨텍스트 생성
+                ctx_lines = [f"## 분석 기간: {_date_start_dt.strftime('%Y-%m')} ~ {max_fin_month}"]
+                ctx_lines.append(f"전체 가집계 매출: {total_pre_sales:,.0f}원")
+                ctx_lines.append(f"전체 확정마감 매출: {total_fin_sales:,.0f}원")
+                ctx_lines.append(f"전체 매출 오차(Δ): {total_diff:,.0f}원 ({total_var_rate:.2f}%)")
+                
+                ctx_lines.append("\n## 채널별 주요 오차 (절대값 기준 상위 15개)")
+                for _, r in ch_total_df.sort_values("abs_diff", ascending=False).head(15).iterrows():
+                    ctx_lines.append(f"- {r['채널']}: 가집계 {r['가집계_매출']:,.0f}원 / 확정 {r['확정_매출']:,.0f}원 / 오차 {r['매출오차(Δ)']:,.0f}원")
+                    
+                ctx_lines.append("\n## 품목별 주요 오차 (절대값 기준 상위 15개)")
+                for _, r in comp_item_df.sort_values("abs_diff", ascending=False).head(15).iterrows():
+                    ctx_lines.append(f"- {r['품목']}: 가집계 {r['가집계_매출']:,.0f}원 / 확정 {r['확정_매출']:,.0f}원 / 오차 {r['매출오차(Δ)']:,.0f}원")
+                    
+                var_ctx = "\n".join(ctx_lines)
+                
+                # 캐시/상태 초기화
+                _var_ctx_key = f"var_ai_ctx_{hash(str(sorted(selected_months)))}_{hash(str(sorted(selected_channel_groups)))}"
+                if st.session_state.get("var_ai_context_key") != _var_ctx_key:
+                    st.session_state["var_ai_context_key"] = _var_ctx_key
+                    st.session_state["var_ai_chat_history"] = []
+                
+                for msg in st.session_state["var_ai_chat_history"]:
+                    st.chat_message(msg["role"]).write(msg["content"])
+                    
+                var_user_input = st.chat_input("확정 비교 분석에 대해 궁금한 점을 질문하세요... (예: 오차가 가장 심한 채널과 품목은?)", key="var_ai_chat")
+                if var_user_input:
+                    st.session_state["var_ai_chat_history"].append({"role": "user", "content": var_user_input})
+                    st.chat_message("user").write(var_user_input)
+                    
+                    sys_prompt = f"당신은 링티 데이터 분석가이자 회계 감사 전문가입니다. 아래는 가집계 매출과 ERP 확정 매출 간의 오차 분석 데이터입니다.\n\n{var_ctx}\n\n위 데이터를 기반으로 사용자의 질문에 한국어로 명확히 답하세요."
+                    msgs = [{"role": m["role"], "content": m["content"]} for m in st.session_state["var_ai_chat_history"]]
+                    
+                    with st.chat_message("assistant"):
+                        with st.spinner("분석 중..."):
+                            try:
+                                ans = call_claude_api(sys_prompt, msgs)
+                                st.write(ans)
+                                st.session_state["var_ai_chat_history"].append({"role": "assistant", "content": ans})
+                            except Exception as e:
+                                st.error(f"AI 호출 오류: {e}")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
