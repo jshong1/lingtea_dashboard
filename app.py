@@ -4397,53 +4397,54 @@ if current_tab_key == "제품별원가":
 # ===================================
 # GLOBAL SIDEBAR AI (현재 화면 동기화)
 # ===================================
-st.sidebar.markdown("---")
-show_global_ai = st.sidebar.toggle("✨ 현재 화면 AI 챗봇 열기", value=False, key="global_ai_toggle")
-
-if show_global_ai:
-    st.sidebar.markdown(f"**🤖 {current_tab_key} 전용 챗봇**")
+if tab_allowed("AI분석"):
+    st.sidebar.markdown("---")
+    show_global_ai = st.sidebar.toggle("✨ 현재 화면 AI 챗봇 열기", value=False, key="global_ai_toggle")
     
-    # 각 탭의 데이터를 기반으로 컨텍스트 수집
-    _local_ctx = "현재 화면에 대한 상세 분석 데이터가 부족합니다."
-    
-    if current_tab_key == "확정비교":
-        try:
-            _local_ctx = var_ctx
-        except NameError:
-            pass
-    elif current_tab_key in ["채널분석", "제품분석", "경영진요약"]:
-        _local_ctx = f"선택된 기간: {_date_start_dt} ~ {_date_end_dt}\n" + build_common_ai_context(filtered_df)
-    else:
-        # 기본 폴백
-        _local_ctx = build_common_ai_context(filtered_df)
+    if show_global_ai:
+        st.sidebar.markdown(f"**🤖 {current_tab_key} 전용 챗봇**")
         
-    _sys_prompt = f"당신은 링티(Lingtea) 데이터 분석 전문가입니다. 아래는 사용자가 현재 대시보드에서 보고 있는 [{current_tab_key}] 화면의 데이터입니다.\n\n{_local_ctx}\n\n위 데이터를 기반으로 사용자의 질문에 한국어로 명확하게 답변하세요."
-    
-    _g_ctx_key = f"g_ai_{current_tab_key}_{hash(str(sorted(selected_months)))}_{hash(str(sorted(selected_channel_groups)))}"
-    
-    # 탭이나 필터가 변경되면 대화 기록 초기화
-    if st.session_state.get("global_ai_ctx_key") != _g_ctx_key:
-        st.session_state["global_ai_ctx_key"] = _g_ctx_key
-        st.session_state["global_ai_chat_history"] = []
+        # 각 탭의 데이터를 기반으로 컨텍스트 수집
+        _local_ctx = "현재 화면에 대한 상세 분석 데이터가 부족합니다."
         
-    # 기존 대화 내역 출력
-    for msg in st.session_state["global_ai_chat_history"]:
-        st.sidebar.chat_message(msg["role"]).write(msg["content"])
+        if current_tab_key == "확정비교":
+            try:
+                _local_ctx = var_ctx
+            except NameError:
+                pass
+        elif current_tab_key in ["채널분석", "제품분석", "경영진요약"]:
+            _local_ctx = f"선택된 기간: {_date_start_dt} ~ {_date_end_dt}\n" + build_common_ai_context(filtered_df)
+        else:
+            # 기본 폴백
+            _local_ctx = build_common_ai_context(filtered_df)
+            
+        _sys_prompt = f"당신은 링티(Lingtea) 데이터 분석 전문가입니다. 아래는 사용자가 현재 대시보드에서 보고 있는 [{current_tab_key}] 화면의 데이터입니다.\n\n{_local_ctx}\n\n위 데이터를 기반으로 사용자의 질문에 한국어로 명확하게 답변하세요."
         
-    # 사용자 입력
-    g_user_input = st.sidebar.chat_input(f"{current_tab_key}에 대해 질문하세요...", key="global_ai_chat")
-    if g_user_input:
-        st.session_state["global_ai_chat_history"].append({"role": "user", "content": g_user_input})
-        st.sidebar.chat_message("user").write(g_user_input)
+        _g_ctx_key = f"g_ai_{current_tab_key}_{hash(str(sorted(selected_months)))}_{hash(str(sorted(selected_channel_groups)))}"
         
-        msgs = [{"role": m["role"], "content": m["content"]} for m in st.session_state["global_ai_chat_history"]]
-        with st.sidebar.chat_message("assistant"):
-            with st.spinner("답변을 생성 중입니다..."):
-                try:
-                    ans = call_claude_api(_sys_prompt, msgs)
-                    st.write(ans)
-                    st.session_state["global_ai_chat_history"].append({"role": "assistant", "content": ans})
-                except Exception as e:
-                    st.error(f"AI 호출 오류: {e}")
+        # 탭이나 필터가 변경되면 대화 기록 초기화
+        if st.session_state.get("global_ai_ctx_key") != _g_ctx_key:
+            st.session_state["global_ai_ctx_key"] = _g_ctx_key
+            st.session_state["global_ai_chat_history"] = []
+            
+        # 기존 대화 내역 출력
+        for msg in st.session_state["global_ai_chat_history"]:
+            st.sidebar.chat_message(msg["role"]).write(msg["content"])
+            
+        # 사용자 입력
+        g_user_input = st.sidebar.chat_input(f"{current_tab_key}에 대해 질문하세요...", key="global_ai_chat")
+        if g_user_input:
+            st.session_state["global_ai_chat_history"].append({"role": "user", "content": g_user_input})
+            st.sidebar.chat_message("user").write(g_user_input)
+            
+            msgs = [{"role": m["role"], "content": m["content"]} for m in st.session_state["global_ai_chat_history"]]
+            with st.sidebar.chat_message("assistant"):
+                with st.spinner("답변을 생성 중입니다..."):
+                    try:
+                        ans = call_claude_api(_sys_prompt, msgs)
+                        st.write(ans)
+                        st.session_state["global_ai_chat_history"].append({"role": "assistant", "content": ans})
+                    except Exception as e:
+                        st.error(f"AI 호출 오류: {e}")
 
 st.success("🚀 Lingtea Dashboard v10 Ready")
