@@ -1587,12 +1587,9 @@ c5.metric("Top 채널", top_channel,        delta=f"{sales_mom:.2f}% MoM")
 st.markdown('</div>', unsafe_allow_html=True)
 
 # -----------------------------
-# 차트용 데이터: 매출조정 제외
+# [Option B] 매출조정 포함: 모든 메뉴에서 동일한 가매출 집계 기준 사용
+# 품목/품목군 상세 차트는 각 섹션 내에서 __매출조정__ 제외 필터를 별도 적용
 # -----------------------------
-filtered_df = filtered_df[
-    filtered_df["내품상품명"].astype(str).str.strip() != "매출조정"
-].copy()
-
 if filtered_df.empty:
     st.info("차트 및 상세 분석에 표시할 데이터가 없습니다.")
     st.stop()
@@ -2121,8 +2118,8 @@ if current_tab_key == "월별추이":
 
         # ── 부서별 매출 구성비 도넛 차트 (expander) ──
         with st.expander("🏢 부서별 월별 매출 구성비", expanded=False):
-            # 매출조정 행 제외하고 집계 (부서 귀속 불분명한 조정액 제외)
-            _dept_df = filtered_df[filtered_df["내품상품명"].astype(str).str.strip() != "매출조정"].copy()
+            # [Option B] 매출조정 포함 - 전체 기준 통일
+            _dept_df = filtered_df.copy()
             _dept_monthly = (
                 _dept_df.groupby(["출고년월", "담당부서"], as_index=False)["품목별매출(VAT제외)"].sum()
             )
