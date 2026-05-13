@@ -1399,7 +1399,7 @@ def render_anomaly_alerts(data, reference_date):
         return
 
     # 5. UI 렌더링 (Expander 사용)
-    with st.expander("🚨 실적 이상 징후 감지 (Spikes & Drops)", expanded=True):
+    with st.expander("🚨 실적 이상 징후 감지 (Spikes & Drops)", expanded=False):
         st.caption(f"💡 **분석 기준**: 종료일({last_t.date()}) 기준 최근 7일 합계 vs 직전 2주 주평균")
         st.caption("• **실출고량**: 최근 7일간의 출고 합계 | **평균출고량**: 직전 2주간의 '주간 평균' 출고량 (동일 7일 기준)")
         st.write("")
