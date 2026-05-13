@@ -77,7 +77,7 @@ st.set_page_config(page_title="Lingtea Dashboard", layout="wide")
 
 SHEET_ID = "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
 
-ALL_TABS = ["경영진요약", "월별추이", "주차별추이", "채널분석", "제품분석", "YoY분석", "공헌이익분석(통합)", "공헌이익분석(국내)", "공헌이익분석(해외)", "제품별원가", "확정비교", "AI분석", "다운로드"]
+ALL_TABS = ["경영진요약", "월별추이", "주차별추이", "채널분석", "제품분석", "YoY분석", "공헌이익분석(통합)", "공헌이익분석(국내)", "공헌이익분석(해외)", "제품별원가", "확정비교", "예상출고량분석", "AI분석", "다운로드"]
 
 DEFAULT_USER_TABS = {t: False for t in ALL_TABS}
 DEFAULT_ADMIN_TABS = {t: True for t in ALL_TABS}
@@ -94,6 +94,7 @@ tab_defs = {
     "공헌이익분석(통합)": "📋 공헌이익(통합)",
     "제품별원가":       "💰 제품별 원가",
     "확정비교":         "⚖️ 확정 비교 분석",
+    "예상출고량분석":   "🔮 예상 출고량 분석",
     "AI분석":           "✨ AI 분석",
     "다운로드":         "📥 다운로드",
 }
@@ -1349,6 +1350,109 @@ st.markdown(f'<div class="main-header">{selected_menu_label}</div>', unsafe_allo
 st.markdown('<div class="sub-header">데이터 기반 비즈니스 인사이트 플랫폼</div>', unsafe_allow_html=True)
 
 # -----------------------------------
+# [신규] 이상 징후 감지 알림 (Global Anomaly Alerts)
+# -----------------------------------
+def render_anomaly_alerts(data, reference_date):
+    # 1. 기준일자 파악 (사용자가 선택한 종료일 또는 데이터의 마지막 날짜)
+    last_t = reference_date
+    if pd.isna(last_t): return
+    
+    # 기간 설정: 최근 7일(C) vs 직전 14일(B)
+    cur_start = last_t - timedelta(days=6)
+    base_end = cur_start - timedelta(days=1)
+    base_start = base_end - timedelta(days=13)
+    
+    # 2. 최근 7일 데이터
+    c_df = data[(data["출고일자"] >= cur_start) & (data["출고일자"] <= last_t)]
+    # 3. 직전 14일 데이터 (주평균 계산용)
+    b_df = data[(data["출고일자"] >= base_start) & (data["출고일자"] <= base_end)]
+    
+    if c_df.empty or b_df.empty: return
+
+    # 품목+채널별 집계 (출고량 + 매출액)
+    c_agg = c_df.groupby(["내품상품명", "거래처분류"])[["총내품출고수량", "품목별매출(VAT제외)"]].sum().reset_index()
+    b_agg = b_df.groupby(["내품상품명", "거래처분류"])[["총내품출고수량", "품목별매출(VAT제외)"]].sum().reset_index()
+    
+    b_agg["총내품출고수량"] = b_agg["총내품출고수량"] / 2 # 14일치를 7일치(주평균)로 환산
+    b_agg["품목별매출(VAT제외)"] = b_agg["품목별매출(VAT제외)"] / 2
+    
+    merged = pd.merge(c_agg, b_agg, on=["내품상품명", "거래처분류"], suffixes=("_cur", "_base"), how="outer").fillna(0)
+    
+    # 4. 분석 대상 필터링
+    # 급증: 주평균 출고량 50개 이상인 건 대상
+    # 급감: 주평균 매출액이 0원보다 큰(실제 판매되던) 건 대상
+    merged["diff_pct"] = (merged["총내품출고수량_cur"] - merged["총내품출고수량_base"]) / merged["총내품출고수량_base"].replace(0, np.nan)
+    
+    spikes = merged[merged["총내품출고수량_base"] >= 50].sort_values("diff_pct", ascending=False).head(3)
+    
+    # 급감: 주평균 매출액이 발생하던 건 중, 현재도 '판매 중(0개 초과)'이면서 급격히 떨어진 건
+    drops = merged[
+        (merged["품목별매출(VAT제외)_base"] > 0) & 
+        (merged["총내품출고수량_cur"] > 0)
+    ].sort_values("diff_pct", ascending=True).head(3)
+    
+    # 필터링: 의미 있는 변화만 (급증 30% 이상, 급감 -20% 이하)
+    spikes = spikes[spikes["diff_pct"] >= 0.3]
+    drops = drops[drops["diff_pct"] <= -0.2]
+    
+    if spikes.empty and drops.empty:
+        return
+
+    # 5. UI 렌더링 (Expander 사용)
+    with st.expander("🚨 실적 이상 징후 감지 (Spikes & Drops)", expanded=True):
+        st.caption(f"💡 **분석 기준**: 종료일({last_t.date()}) 기준 최근 7일 합계 vs 직전 2주 주평균")
+        st.caption("• **실출고량**: 최근 7일간의 출고 합계 | **평균출고량**: 직전 2주간의 '주간 평균' 출고량 (동일 7일 기준)")
+        st.write("")
+        
+        col_s, col_d = st.columns(2)
+        
+        with col_s:
+            st.markdown("<b style='color:#1E40AF;'>🚀 급증 TOP 3</b>", unsafe_allow_html=True)
+            if not spikes.empty:
+                s_disp = spikes.rename(columns={
+                    "내품상품명": "제품명",
+                    "거래처분류": "채널",
+                    "총내품출고수량_cur": "실출고량",
+                    "총내품출고수량_base": "평균출고량",
+                    "diff_pct": "증감률"
+                })[["제품명", "채널", "실출고량", "평균출고량", "증감률"]]
+                
+                st.dataframe(
+                    s_disp.style.format({
+                        "실출고량": "{:,.0f}",
+                        "평균출고량": "{:,.0f}",
+                        "증감률": "{:+.1%}"
+                    }),
+                    hide_index=True,
+                    use_container_width=True
+                )
+            else:
+                st.info("급증 품목 없음")
+
+        with col_d:
+            st.markdown("<b style='color:#B91C1C;'>📉 급감 TOP 3</b>", unsafe_allow_html=True)
+            if not drops.empty:
+                d_disp = drops.rename(columns={
+                    "내품상품명": "제품명",
+                    "거래처분류": "채널",
+                    "총내품출고수량_cur": "실출고량",
+                    "총내품출고수량_base": "평균출고량",
+                    "diff_pct": "증감률"
+                })[["제품명", "채널", "실출고량", "평균출고량", "증감률"]]
+                
+                st.dataframe(
+                    d_disp.style.format({
+                        "실출고량": "{:,.0f}",
+                        "평균출고량": "{:,.0f}",
+                        "증감률": "{:+.1%}"
+                    }),
+                    hide_index=True,
+                    use_container_width=True
+                )
+            else:
+                st.info("급감 품목 없음")
+
+# -----------------------------------
 # 전역 필터 (상단 배치)
 # -----------------------------------
 with st.container():
@@ -1401,6 +1505,9 @@ import datetime as _dt
 _date_start_dt = pd.Timestamp(_date_start)
 _date_end_dt   = pd.Timestamp(_date_end) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
 
+# 이상 징후 알림 렌더링 (필터링된 날짜 기준)
+render_anomaly_alerts(df, _date_end_dt)
+
 # all_months: 전체 데이터 기준 월 목록 (공헌이익 탭 비용표 등에서 사용)
 all_months = sort_month_cols(df["출고년월"].dropna().unique().tolist())
 
@@ -1415,13 +1522,19 @@ selected_months    = sort_month_cols(_date_filtered_df["출고년월"].dropna().
 # -----------------------------------
 # filtered_df (이미 비용이 계산된 df에서 필터링만 수행)
 # -----------------------------------
-# 매출조정 행은 부서 구분 없이 품목 필터와 무관하게 항상 포함 (음수 매출 반영 필수)
+# 매출조정 행은 '전체 선택'일 때만 포함하고, 특정 품목 필터링 시에는 제외
 _is_adj_mask = df["내품상품명"].astype(str).str.strip() == "매출조정"
 
-# [추가] 비교 분석용 베이스 데이터 (날짜 필터만 제외하고 채널/품목 필터 적용)
+# [수정] 매출조정 포함 조건: 품목군 필터가 비어있고 + 품목 전체 선택이 켜져 있을 때만 (즉, 완전 전체 조회일 때만)
+if (not selected_item_groups) and _item_select_all:
+    # 완전 전체 조회 시에는 매출조정 포함
+    _item_mask = df["내품상품명"].isin(selected_items) | _is_adj_mask
+else:
+    # 특정 품목군 혹은 품목이 필터링된 경우 매출조정 제외
+    _item_mask = df["내품상품명"].isin(selected_items)
+
 _comp_base_mask = (
-    df["거래처분류"].isin(selected_channel_groups) &
-    (df["내품상품명"].isin(selected_items) | _is_adj_mask)
+    df["거래처분류"].isin(selected_channel_groups) & _item_mask
 )
 comparison_base_df = df[_comp_base_mask].copy()
 
@@ -3654,6 +3767,90 @@ if current_tab_key == "확정비교":
                 ctx_lines.append(f"- {r['품목']}: 가집계 {r['가집계_매출']:,.0f}원 / 확정 {r['확정_매출']:,.0f}원 / 오차 {r['매출오차(Δ)']:,.0f}원")
                 
             var_ctx = "\n".join(ctx_lines)
+
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ===================================
+# TAB: 예상 출고량 분석
+# ===================================
+if current_tab_key == "예상출고량분석":
+    st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
+    st.subheader("🔮 예상 출고량 분석")
+    st.info("💡 과거 데이터의 판매 속도를 기반으로 향후 30일간의 예상 출고량을 계산합니다.")
+
+    # 1. 기준 기간 선택
+    period_option = st.selectbox(
+        "분석 기준 기간 선택",
+        ["직전 2주 평균", "직전 1개월 평균", "직전 3개월 평균"],
+        index=1,
+        help="선택한 기간 동안의 판매 속도(일평균 출고량)를 기준으로 미래를 예측합니다."
+    )
+
+    # 일수 매핑
+    days_map = {"직전 2주 평균": 14, "직전 1개월 평균": 30, "직전 3개월 평균": 90}
+    analysis_days = days_map[period_option]
+
+    # 2. 데이터 기준일 파악 (데이터셋 내 마지막 출고일)
+    last_date = df["출고일자"].max()
+    if pd.isna(last_date):
+        st.warning("데이터에 출고일자 정보가 없어 분석을 진행할 수 없습니다.")
+        st.stop()
+
+    start_date = last_date - timedelta(days=analysis_days)
+    
+    st.caption(f"📅 분석 데이터 기간: {start_date.date()} ~ {last_date.date()} ({analysis_days}일간)")
+
+    # 3. 기간 내 데이터 필터링
+    # 주의: 필터링되지 않은 원본 df를 사용해야 정확한 판매 속도를 계산할 수 있음
+    period_df = df[(df["출고일자"] >= start_date) & (df["출고일자"] <= last_date)].copy()
+
+    if period_df.empty:
+        st.warning("선택한 기간 내에 출고 데이터가 없습니다.")
+    else:
+        # 제품별 총 출고량 집계
+        predict_summary = period_df.groupby("내품상품명")["총내품출고수량"].sum().reset_index()
+        predict_summary.columns = ["제품명", "기간내 총출고량"]
+        
+        # 일평균 및 30일 예상치 계산
+        predict_summary["일평균 출고량"] = predict_summary["기간내 총출고량"] / analysis_days
+        predict_summary["다음 달 예상 출고량"] = (predict_summary["일평균 출고량"] * 30).round(0)
+        
+        # 품목군 매핑 (표시용)
+        item_map = df[["내품상품명", "품목군"]].drop_duplicates("내품상품명").set_index("내품상품명")["품목군"].to_dict()
+        predict_summary["품목군"] = predict_summary["제품명"].map(item_map)
+        
+        # 정렬 및 컬럼 순서 조정
+        predict_summary = predict_summary[["품목군", "제품명", "기간내 총출고량", "일평균 출고량", "다음 달 예상 출고량"]]
+        predict_summary = predict_summary.sort_values("다음 달 예상 출고량", ascending=False)
+
+        # 4. 결과 표시
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.markdown(f"#### 📦 제품별 예상 출고량 ({period_option})")
+            st.dataframe(
+                predict_summary.style.format({
+                    "기간내 총출고량": "{:,.0f}",
+                    "일평균 출고량": "{:,.1f}",
+                    "다음 달 예상 출고량": "{:,.0f}"
+                }),
+                use_container_width=True,
+                height=600
+            )
+        
+        with col2:
+            st.markdown("#### 📊 요약 Insight")
+            total_predicted = predict_summary["다음 달 예상 출고량"].sum()
+            st.metric("전체 예상 총 출고량", f"{total_predicted:,.0f} 개")
+            
+            if not predict_summary.empty:
+                top_item = predict_summary.iloc[0]
+                st.write(f"🔥 **가장 많은 출고가 예상되는 제품**")
+                st.info(f"{top_item['제품명']}\n({top_item['다음 달 예상 출고량']:,.0f} 개 예상)")
+            
+            st.divider()
+            st.markdown("#### 📦 재고 연동 (준비 중)")
+            st.caption("현재 재고 데이터를 연결하면 '재고 소진 예정일'을 자동으로 계산할 수 있습니다.")
+            st.button("재고 데이터 업로드 기능 추가 제안", disabled=True, key="btn_inv_future")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
