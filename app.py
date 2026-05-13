@@ -3819,16 +3819,34 @@ if current_tab_key == "예상출고량분석":
         item_map = df[["내품상품명", "품목군"]].drop_duplicates("내품상품명").set_index("내품상품명")["품목군"].to_dict()
         predict_summary["품목군"] = predict_summary["제품명"].map(item_map)
         
+        # [수정] 노이즈 품목군 제거 (__미분류__, __매출조정__)
+        predict_summary = predict_summary[~predict_summary["품목군"].isin(["__미분류__", "__매출조정__"])].copy()
+
         # 정렬 및 컬럼 순서 조정
         predict_summary = predict_summary[["품목군", "제품명", "기간내 총출고량", "일평균 출고량", "다음 달 예상 출고량"]]
         predict_summary = predict_summary.sort_values("다음 달 예상 출고량", ascending=False)
 
-        # 4. 결과 표시
+        # 4. 결과 표시 및 로컬 필터
         col1, col2 = st.columns([2, 1])
         with col1:
+            # [신규] 테이블 바로 위 품목군 필터 추가 (기본값은 비워두어 UI 깔끔하게 유지)
+            _pred_groups = sorted(predict_summary["품목군"].dropna().unique().tolist())
+            selected_pred_groups = st.multiselect(
+                "📁 분석할 품목군 선택 (비워두면 전체)",
+                options=_pred_groups,
+                default=[],
+                key="pred_group_filter"
+            )
+            
+            # 필터 적용: 비어있으면 전체, 아니면 선택된 것만
+            if selected_pred_groups:
+                disp_predict = predict_summary[predict_summary["품목군"].isin(selected_pred_groups)].copy()
+            else:
+                disp_predict = predict_summary.copy()
+
             st.markdown(f"#### 📦 제품별 예상 출고량 ({period_option})")
             st.dataframe(
-                predict_summary.style.format({
+                disp_predict.style.format({
                     "기간내 총출고량": "{:,.0f}",
                     "일평균 출고량": "{:,.1f}",
                     "다음 달 예상 출고량": "{:,.0f}"
@@ -3839,11 +3857,12 @@ if current_tab_key == "예상출고량분석":
         
         with col2:
             st.markdown("#### 📊 요약 Insight")
-            total_predicted = predict_summary["다음 달 예상 출고량"].sum()
+            # 필터링된 데이터 기준으로 인사이트 계산
+            total_predicted = disp_predict["다음 달 예상 출고량"].sum()
             st.metric("전체 예상 총 출고량", f"{total_predicted:,.0f} 개")
             
-            if not predict_summary.empty:
-                top_item = predict_summary.iloc[0]
+            if not disp_predict.empty:
+                top_item = disp_predict.iloc[0]
                 st.write(f"🔥 **가장 많은 출고가 예상되는 제품**")
                 st.info(f"{top_item['제품명']}\n({top_item['다음 달 예상 출고량']:,.0f} 개 예상)")
             
