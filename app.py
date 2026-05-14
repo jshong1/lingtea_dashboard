@@ -3829,7 +3829,7 @@ if current_tab_key == "예상출고량분석":
         # 4. 결과 표시 및 로컬 필터
         col1, col2 = st.columns([2, 1])
         with col1:
-            # [신규] 테이블 바로 위 품목군 필터 추가 (기본값은 비워두어 UI 깔끔하게 유지)
+            # 1. 품목군 필터
             _pred_groups = sorted(predict_summary["품목군"].dropna().unique().tolist())
             selected_pred_groups = st.multiselect(
                 "📁 분석할 품목군 선택 (비워두면 전체)",
@@ -3838,11 +3838,26 @@ if current_tab_key == "예상출고량분석":
                 key="pred_group_filter"
             )
             
-            # 필터 적용: 비어있으면 전체, 아니면 선택된 것만
+            # 2. 품목군 필터 결과에 따른 품목 목록 생성 (동적 필터링)
             if selected_pred_groups:
-                disp_predict = predict_summary[predict_summary["품목군"].isin(selected_pred_groups)].copy()
+                _pred_items_options = sorted(predict_summary[predict_summary["품목군"].isin(selected_pred_groups)]["제품명"].unique().tolist())
             else:
-                disp_predict = predict_summary.copy()
+                _pred_items_options = sorted(predict_summary["제품명"].unique().tolist())
+            
+            # 3. 품목 필터 추가
+            selected_pred_items = st.multiselect(
+                "📦 분석할 품목 선택 (비워두면 전체)",
+                options=_pred_items_options,
+                default=[],
+                key="pred_item_filter"
+            )
+            
+            # 최종 필터 적용: 품목군과 품목 조건을 결합
+            disp_predict = predict_summary.copy()
+            if selected_pred_groups:
+                disp_predict = disp_predict[disp_predict["품목군"].isin(selected_pred_groups)]
+            if selected_pred_items:
+                disp_predict = disp_predict[disp_predict["제품명"].isin(selected_pred_items)]
 
             st.markdown(f"#### 📦 제품별 예상 출고량 ({period_option})")
             st.dataframe(
