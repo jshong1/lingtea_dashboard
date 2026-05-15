@@ -874,6 +874,75 @@ def safe_max(series: pd.Series, default=0):
     return default if pd.isna(value) else value
 
 # -----------------------------------
+# 재고 데이터 관련 함수
+# -----------------------------------
+@st.cache_data(ttl=600)
+def load_inventory_status():
+    """DB에서 최신 재고 현황을 불러옵니다."""
+    try:
+        DB_URL = st.secrets["DB_URL"]
+        conn = st.connection("postgresql", type="sql", url=DB_URL)
+        df = conn.query('SELECT * FROM "inventory_status"', ttl=0)
+        return df
+    except Exception as e:
+        # 테이블이 아직 없는 경우 빈 DF 반환
+        return pd.DataFrame()
+
+def save_inventory_status(df, user_email):
+    """업로드된 재고 데이터를 DB에 저장합니다 (기존 데이터 삭제 후 삽입)."""
+    try:
+        from sqlalchemy import text
+        DB_URL = st.secrets["DB_URL"]
+        conn = st.connection("postgresql", type="sql", url=DB_URL)
+        
+        # 1. 기존 데이터 삭제 (테이블이 없을 수 있으므로 예외 처리)
+        try:
+            with conn.session as s:
+                s.execute(text('DELETE FROM "inventory_status"'))
+                s.commit()
+        except:
+            pass
+            
+        # 2. 신규 데이터 삽입
+        df["updated_at"] = datetime.now()
+        df["updated_by"] = user_email
+        df.to_sql("inventory_status", conn.engine, if_exists="append", index=False)
+        
+        st.cache_data.clear() # 캐시 초기화
+        return True
+    except Exception as e:
+        st.error(f"재고 데이터 저장 중 오류 발생: {e}")
+        return False
+
+def parse_wms_stock_file(uploaded_file):
+    """WMS 엑셀 파일을 파싱하여 표준화된 DataFrame으로 반환합니다."""
+    try:
+        # WMS .xls 파일은 보통 2행부터 헤더가 있음
+        df = pd.read_excel(uploaded_file, engine='xlrd', header=1)
+        
+        # 필수 컬럼 확인 (WMS 양식: 물류센터, 상품코드, 상품명, 가용재고)
+        required_cols = ["물류센터", "상품코드", "상품명", "가용재고"]
+        if not all(col in df.columns for col in required_cols):
+            st.error(f"엑셀 파일 형식이 올바르지 않습니다. 필수 항목: {required_cols}")
+            return None
+            
+        # 데이터 정제: 상품코드별로 재고 합산 (여러 창고에 분산된 경우)
+        df = df[required_cols].copy()
+        df["가용재고"] = pd.to_numeric(df["가용재고"], errors='coerce').fillna(0)
+        
+        # 상품코드/상품명 기준으로 그룹화하여 합산
+        agg_df = df.groupby(["상품코드", "상품명"], as_index=False)["가용재고"].sum()
+        agg_df = agg_df.rename(columns={
+            "상품코드": "product_code",
+            "상품명": "product_name",
+            "가용재고": "stock_qty"
+        })
+        return agg_df
+    except Exception as e:
+        st.error(f"파일 파싱 중 오류 발생: {e}")
+        return None
+
+# -----------------------------------
 # 데이터 로드
 # -----------------------------------
 @st.cache_data(ttl=600)
@@ -3826,9 +3895,35 @@ if current_tab_key == "예상출고량분석":
         predict_summary = predict_summary[["품목군", "제품명", "기간내 총출고량", "일평균 출고량", "다음 달 예상 출고량"]]
         predict_summary = predict_summary.sort_values("다음 달 예상 출고량", ascending=False)
 
+        # 재고 데이터 로드
+        inv_df = load_inventory_status()
+        inv_summary = pd.DataFrame()
+        if inv_df is not None and not inv_df.empty:
+            inv_summary = inv_df.groupby("product_name")["stock_qty"].sum().reset_index()
+
         # 4. 결과 표시 및 로컬 필터
-        col1, col2 = st.columns([2, 1])
-        with col1:
+        col_main, col_side = st.columns([4, 1])
+        
+        with col_side:
+            st.markdown("#### 📥 데이터 관리")
+            with st.expander("재고 파일 업로드", expanded=False):
+                st.caption("WMS .xls 파일을 업로드하여 서버의 재고 현황을 업데이트합니다.")
+                uploaded_stock = st.file_uploader("파일 선택", type=["xls"], key="stock_uploader_pred")
+                if uploaded_stock:
+                    if st.button("🚀 서버 반영", use_container_width=True, type="primary", key="btn_save_stock_pred"):
+                        with st.spinner("처리 중..."):
+                            stock_df = parse_wms_stock_file(uploaded_stock)
+                            if stock_df is not None:
+                                user_mail = st.session_state.get("user_email", "unknown")
+                                if save_inventory_status(stock_df, user_mail):
+                                    st.success("반영 완료")
+                                    st.rerun()
+            
+            if not inv_summary.empty:
+                last_update = inv_df["updated_at"].iloc[0] if "updated_at" in inv_df.columns else "알 수 없음"
+                st.caption(f"🕒 최종 업데이트: {last_update}")
+
+        with col_main:
             # 1. 품목군 필터
             _pred_groups = sorted(predict_summary["품목군"].dropna().unique().tolist())
             selected_pred_groups = st.multiselect(
@@ -3852,39 +3947,67 @@ if current_tab_key == "예상출고량분석":
                 key="pred_item_filter"
             )
             
-            # 최종 필터 적용: 품목군과 품목 조건을 결합
+            # 최종 필터 적용
             disp_predict = predict_summary.copy()
             if selected_pred_groups:
                 disp_predict = disp_predict[disp_predict["품목군"].isin(selected_pred_groups)]
             if selected_pred_items:
                 disp_predict = disp_predict[disp_predict["제품명"].isin(selected_pred_items)]
 
-            st.markdown(f"#### 📦 제품별 예상 출고량 ({period_option})")
+            # 재고 데이터 결합 및 계산
+            if not inv_summary.empty:
+                disp_predict = pd.merge(
+                    disp_predict, 
+                    inv_summary, 
+                    left_on="제품명", 
+                    right_on="product_name", 
+                    how="left"
+                ).fillna(0)
+                disp_predict["재고일수"] = np.where(
+                    disp_predict["일평균 출고량"] > 0,
+                    disp_predict["stock_qty"] / disp_predict["일평균 출고량"],
+                    0
+                )
+                disp_predict = disp_predict.rename(columns={"stock_qty": "현재고"})
+                # 컬럼 순서 조정
+                final_cols = ["품목군", "제품명", "기간내 총출고량", "일평균 출고량", "다음 달 예상 출고량", "현재고", "재고일수"]
+                disp_predict = disp_predict[final_cols]
+            else:
+                disp_predict["현재고"] = 0
+                disp_predict["재고일수"] = 0
+
+            st.markdown(f"#### 📦 제품별 예상 출고량 및 재고 현황 ({period_option})")
+            
+            # 스타일링: 재고 부족 품목 하이라이트
+            def highlight_low_stock(row):
+                if 0 < row["재고일수"] < 14:
+                    return ['background-color: #fee2e2'] * len(row) # Red
+                elif 14 <= row["재고일수"] < 30:
+                    return ['background-color: #fef3c7'] * len(row) # Orange
+                return [''] * len(row)
+
             st.dataframe(
-                disp_predict.style.format({
+                disp_predict.style.apply(highlight_low_stock, axis=1).format({
                     "기간내 총출고량": "{:,.0f}",
                     "일평균 출고량": "{:,.1f}",
-                    "다음 달 예상 출고량": "{:,.0f}"
+                    "다음 달 예상 출고량": "{:,.0f}",
+                    "현재고": "{:,.0f}",
+                    "재고일수": "{:,.1f}일"
                 }),
                 use_container_width=True,
-                height=600
+                height=700
             )
-        
-        with col2:
-            st.markdown("#### 📊 요약 Insight")
-            # 필터링된 데이터 기준으로 인사이트 계산
-            total_predicted = disp_predict["다음 달 예상 출고량"].sum()
-            st.metric("전체 예상 총 출고량", f"{total_predicted:,.0f} 개")
             
-            if not disp_predict.empty:
-                top_item = disp_predict.iloc[0]
-                st.write(f"🔥 **가장 많은 출고가 예상되는 제품**")
-                st.info(f"{top_item['제품명']}\n({top_item['다음 달 예상 출고량']:,.0f} 개 예상)")
-            
-            st.divider()
-            st.markdown("#### 📦 재고 연동 (준비 중)")
-            st.caption("현재 재고 데이터를 연결하면 '재고 소진 예정일'을 자동으로 계산할 수 있습니다.")
-            st.button("재고 데이터 업로드 기능 추가 제안", disabled=True, key="btn_inv_future")
+            # 요약 인사이트 (메트릭)
+            m_col1, m_col2 = st.columns(2)
+            with m_col1:
+                total_predicted = disp_predict["다음 달 예상 출고량"].sum()
+                st.metric("전체 예상 총 출고량", f"{total_predicted:,.0f} 개")
+            with m_col2:
+                if not disp_predict.empty:
+                    top_item = disp_predict.iloc[0]
+                    st.write(f"🔥 **최다 출고 예상:** {top_item['제품명']}")
+
 
     st.markdown('</div>', unsafe_allow_html=True)
 
