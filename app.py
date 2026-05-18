@@ -2783,31 +2783,78 @@ if current_tab_key == "채널분석":
 
         current_channels = sorted(filtered_df["거래처분류"].dropna().unique().tolist())
 
-        preset_items_dict = {}
-        if selected_preset:
-            preset_items_dict = {item["source"]: item for item in selected_preset.get("items", [])}
+        # 프리셋 상태 관리용 세션 초기화
+        curr_preset_id = selected_preset["id"] if (use_preset and selected_preset) else "none"
+        preset_id_changed = False
+        if st.session_state.get("prev_channel_preset_id") != curr_preset_id:
+            st.session_state["prev_channel_preset_id"] = curr_preset_id
+            preset_id_changed = True
+            
+        if st.session_state.get("prev_channel_preset_channels") != current_channels:
+            st.session_state["prev_channel_preset_channels"] = current_channels
+            preset_id_changed = True
+            
+        if "channel_preset_editor_state" not in st.session_state or preset_id_changed:
+            preset_items_dict = {}
+            if selected_preset:
+                preset_items_dict = {item["source"]: item for item in selected_preset.get("items", [])}
+            
+            edit_items = []
+            for idx, ch in enumerate(current_channels):
+                if ch in preset_items_dict:
+                    edit_items.append({
+                        "include": preset_items_dict[ch].get("include", True),
+                        "source": ch,
+                        "display": preset_items_dict[ch].get("display", ch),
+                        "order": int(preset_items_dict[ch].get("order", idx + 1))
+                    })
+                else:
+                    edit_items.append({
+                        "include": False if selected_preset else True,
+                        "source": ch,
+                        "display": ch,
+                        "order": idx + 1
+                    })
+            st.session_state["channel_preset_editor_state"] = edit_items
 
-        edit_items = []
-        for idx, ch in enumerate(current_channels):
-            if ch in preset_items_dict:
-                edit_items.append({
-                    "include": preset_items_dict[ch].get("include", True),
-                    "source": ch,
-                    "display": preset_items_dict[ch].get("display", ch),
-                    "order": int(preset_items_dict[ch].get("order", idx + 1))
-                })
-            else:
-                edit_items.append({
-                    "include": False if selected_preset else True,
-                    "source": ch,
-                    "display": ch,
-                    "order": idx + 1
-                })
+        if "editor_rerun_counter" not in st.session_state:
+            st.session_state["editor_rerun_counter"] = 0
 
-        edit_df = pd.DataFrame(edit_items)
+        # 검색바 추가
+        search_query = st.text_input("🔍 채널명 검색", value="", key="channel_preset_search_query", placeholder="검색할 채널명을 입력하세요...")
+
+        # 전체 선택/해제 버튼
+        btn_select_label = "✅ 검색 결과 전체 선택" if search_query else "✅ 전체 선택"
+        btn_deselect_label = "❌ 검색 결과 전체 해제" if search_query else "❌ 전체 해제"
+        
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            if st.button(btn_select_label, use_container_width=True, key="btn_channel_preset_select_all"):
+                for item in st.session_state["channel_preset_editor_state"]:
+                    if not search_query or search_query.lower() in item["source"].lower() or search_query.lower() in item["display"].lower():
+                        item["include"] = True
+                st.session_state["editor_rerun_counter"] += 1
+                st.rerun()
+        with col_btn2:
+            if st.button(btn_deselect_label, use_container_width=True, key="btn_channel_preset_deselect_all"):
+                for item in st.session_state["channel_preset_editor_state"]:
+                    if not search_query or search_query.lower() in item["source"].lower() or search_query.lower() in item["display"].lower():
+                        item["include"] = False
+                st.session_state["editor_rerun_counter"] += 1
+                st.rerun()
+
+        # 검색어 필터링 적용된 DataFrame 준비
+        all_items_df = pd.DataFrame(st.session_state["channel_preset_editor_state"])
+        if search_query:
+            filtered_items_df = all_items_df[
+                all_items_df["source"].str.contains(search_query, case=False, na=False) |
+                all_items_df["display"].str.contains(search_query, case=False, na=False)
+            ]
+        else:
+            filtered_items_df = all_items_df
 
         edited_df = st.data_editor(
-            edit_df,
+            filtered_items_df,
             column_config={
                 "include": st.column_config.CheckboxColumn("포함여부", default=True),
                 "source": st.column_config.TextColumn("원본 채널명", disabled=True),
@@ -2816,12 +2863,21 @@ if current_tab_key == "채널분석":
             },
             use_container_width=True,
             hide_index=True,
-            key="channel_preset_data_editor"
+            key=f"channel_preset_data_editor_{st.session_state['editor_rerun_counter']}"
         )
+
+        # 사용자가 data_editor에서 편집한 사항을 세션 상태에 즉시 동기화
+        edited_dict = {row["source"]: row for row in edited_df.to_dict(orient="records")}
+        for item in st.session_state["channel_preset_editor_state"]:
+            ch_name = item["source"]
+            if ch_name in edited_dict:
+                item["include"] = edited_dict[ch_name]["include"]
+                item["display"] = edited_dict[ch_name]["display"]
+                item["order"] = int(edited_dict[ch_name]["order"])
 
         col_save, col_save_new, col_del = st.columns(3)
 
-        edited_items = edited_df.to_dict(orient="records")
+        edited_items = st.session_state["channel_preset_editor_state"]
         active_sources = set(current_channels)
         preserved_items = []
         if selected_preset:
