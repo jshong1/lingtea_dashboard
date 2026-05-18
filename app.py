@@ -3845,169 +3845,271 @@ if current_tab_key == "확정비교":
 if current_tab_key == "예상출고량분석":
     st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
     st.subheader("🔮 예상 출고량 분석")
-    st.info("💡 과거 데이터의 판매 속도를 기반으로 향후 30일간의 예상 출고량을 계산합니다.")
+    st.info("💡 과거 데이터의 판매 속도를 기반으로 향후 예상 필요수량 및 재고 상태를 분석합니다.")
 
-    # 1. 기준 기간 선택
-    period_option = st.selectbox(
-        "분석 기준 기간 선택",
-        ["직전 2주 평균", "직전 1개월 평균", "직전 3개월 평균"],
-        index=1,
-        help="선택한 기간 동안의 판매 속도(일평균 출고량)를 기준으로 미래를 예측합니다."
-    )
+    @st.cache_data(ttl=600)
+    def load_item_master_details():
+        try:
+            client = get_gspread_client()
+            ws = client.open_by_key(SHEET_ID).worksheet("ITEM_MASTER")
+            data = ws.get_all_values()
+            if not data or len(data) < 2:
+                return pd.DataFrame(columns=["상품명", "리드타임(일)", "MOQ"])
+            headers = [str(h).strip() for h in data[0]]
+            df_item = pd.DataFrame(data[1:], columns=headers)
+            
+            res_df = pd.DataFrame()
+            if "상품명" in df_item.columns:
+                res_df["상품명"] = df_item["상품명"]
+            else:
+                res_df["상품명"] = ""
+            
+            if "리드타임(일)" in df_item.columns:
+                res_df["리드타임(일)"] = pd.to_numeric(df_item["리드타임(일)"], errors="coerce").fillna(0)
+            else:
+                res_df["리드타임(일)"] = 0
+                
+            if "MOQ" in df_item.columns:
+                res_df["MOQ"] = pd.to_numeric(df_item["MOQ"].astype(str).str.replace(',', '', regex=False), errors="coerce").fillna(0)
+            else:
+                res_df["MOQ"] = 0
+                
+            return res_df
+        except Exception as e:
+            return pd.DataFrame(columns=["상품명", "리드타임(일)", "MOQ"])
 
-    # 일수 매핑
-    days_map = {"직전 2주 평균": 14, "직전 1개월 평균": 30, "직전 3개월 평균": 90}
-    analysis_days = days_map[period_option]
-
-    # 2. 데이터 기준일 파악 (데이터셋 내 마지막 출고일)
+    # 1. 기준일 파악 (데이터셋 내 마지막 출고일 및 필터 종료일)
     last_date = df["출고일자"].max()
     if pd.isna(last_date):
         st.warning("데이터에 출고일자 정보가 없어 분석을 진행할 수 없습니다.")
         st.stop()
+        
+    try:
+        ref_date_candidate = _date_end_dt.normalize()
+    except NameError:
+        ref_date_candidate = last_date.normalize()
 
-    start_date = last_date - timedelta(days=analysis_days)
+    if ref_date_candidate > last_date.normalize():
+        ref_date = last_date.normalize()
+    else:
+        ref_date = ref_date_candidate
+
+    # 2. 기준 기간 및 재고 기준 선택
+    col_opt1, col_opt2 = st.columns(2)
+    with col_opt1:
+        period_option = st.selectbox(
+            "분석 기준 기간 선택",
+            ["직전 2주 평균", "직전 1개월 평균", "직전 3개월 평균"],
+            index=1,
+            help="선택한 기간 동안의 판매 속도(일평균 출고량)를 기준으로 미래를 예측합니다."
+        )
+    with col_opt2:
+        # 5~9월은 기본 3개월, 그 외는 2개월
+        default_inv_idx = 1 if ref_date.month in [5, 6, 7, 8, 9] else 0
+        inv_option = st.selectbox(
+            "재고 기준 선택",
+            ["일반 기준: 2개월", "성수기 기준: 3개월"],
+            index=default_inv_idx,
+            help="예상 필요수량 계산 시 몇 개월치 재고를 기준으로 할지 선택합니다."
+        )
+        inv_months = 3 if "3개월" in inv_option else 2
+
+    days_map = {"직전 2주 평균": 14, "직전 1개월 평균": 30, "직전 3개월 평균": 90}
+    analysis_days = days_map[period_option]
+
+    start_date = ref_date - pd.Timedelta(days=analysis_days - 1)
     
-    st.caption(f"📅 분석 데이터 기간: {start_date.date()} ~ {last_date.date()} ({analysis_days}일간)")
+    st.caption(f"📅 **기준일:** {ref_date.date()} &nbsp;|&nbsp; **분석기간:** {start_date.date()} ~ {ref_date.date()} &nbsp;|&nbsp; **분석 기준 기간:** {period_option} &nbsp;|&nbsp; **재고 기준:** {inv_option}")
 
     # 3. 기간 내 데이터 필터링
-    # 주의: 필터링되지 않은 원본 df를 사용해야 정확한 판매 속도를 계산할 수 있음
-    period_df = df[(df["출고일자"] >= start_date) & (df["출고일자"] <= last_date)].copy()
+    period_df = df[(df["출고일자"].dt.normalize() >= start_date) & (df["출고일자"].dt.normalize() <= ref_date)].copy()
 
     if period_df.empty:
-        st.warning("선택한 기간 내에 출고 데이터가 없습니다.")
+        st.warning("선택한 분석기간 내에 출고 데이터가 없습니다.")
+        predict_summary = pd.DataFrame(columns=["품목군", "제품명", "분석기간 출고량", "일평균 출고량", "예상 필요수량"])
     else:
         # 제품별 총 출고량 집계
         predict_summary = period_df.groupby("내품상품명")["총내품출고수량"].sum().reset_index()
-        predict_summary.columns = ["제품명", "기간내 총출고량"]
+        predict_summary.columns = ["제품명", "분석기간 출고량"]
         
-        # 일평균 및 30일 예상치 계산
-        predict_summary["일평균 출고량"] = predict_summary["기간내 총출고량"] / analysis_days
-        predict_summary["다음 달 예상 출고량"] = (predict_summary["일평균 출고량"] * 30).round(0)
+        # 일평균 및 예상 필요수량 계산
+        predict_summary["일평균 출고량"] = predict_summary["분석기간 출고량"] / analysis_days
+        predict_summary["예상 필요수량"] = (predict_summary["일평균 출고량"] * 30 * inv_months).round(0)
         
-        # 품목군 매핑 (표시용)
+        # 품목군 매핑
         item_map = df[["내품상품명", "품목군"]].drop_duplicates("내품상품명").set_index("내품상품명")["품목군"].to_dict()
         predict_summary["품목군"] = predict_summary["제품명"].map(item_map)
         
-        # [수정] 노이즈 품목군 제거 (__미분류__, __매출조정__)
+        # 노이즈 품목군 제거 (__미분류__, __매출조정__)
         predict_summary = predict_summary[~predict_summary["품목군"].isin(["__미분류__", "__매출조정__"])].copy()
 
-        # 정렬 및 컬럼 순서 조정
-        predict_summary = predict_summary[["품목군", "제품명", "기간내 총출고량", "일평균 출고량", "다음 달 예상 출고량"]]
-        predict_summary = predict_summary.sort_values("다음 달 예상 출고량", ascending=False)
+    # 재고 데이터 로드
+    inv_df = load_inventory_status()
+    inv_summary = pd.DataFrame()
+    if inv_df is not None and not inv_df.empty:
+        inv_summary = inv_df.groupby("product_name")["stock_qty"].sum().reset_index()
 
-        # 재고 데이터 로드
-        inv_df = load_inventory_status()
-        inv_summary = pd.DataFrame()
-        if inv_df is not None and not inv_df.empty:
-            inv_summary = inv_df.groupby("product_name")["stock_qty"].sum().reset_index()
+    # ITEM_MASTER 로드
+    item_master_df = load_item_master_details()
 
-        # 4. 결과 표시 및 로컬 필터
-        col_main, col_side = st.columns([4, 1])
+    # 4. 결과 표시 및 로컬 필터
+    col_main, col_side = st.columns([4, 1])
+    
+    with col_side:
+        st.markdown("#### 📥 데이터 관리")
+        with st.expander("재고 파일 업로드", expanded=False):
+            st.caption("WMS 재고 파일을 업로드하면 업로드 시점 기준 현재고가 반영됩니다.")
+            st.caption("현재고는 실시간 WMS 연동값이 아니라 마지막 업로드 기준입니다.")
+            uploaded_stock = st.file_uploader("파일 선택", type=["xls"], key="stock_uploader_pred")
+            if uploaded_stock:
+                if st.button("🚀 서버 반영", use_container_width=True, type="primary", key="btn_save_stock_pred"):
+                    with st.spinner("처리 중..."):
+                        stock_df = parse_wms_stock_file(uploaded_stock)
+                        if stock_df is not None:
+                            user_mail = st.session_state.get("user_email", "unknown")
+                            if save_inventory_status(stock_df, user_mail):
+                                st.success("반영 완료")
+                                st.rerun()
         
-        with col_side:
-            st.markdown("#### 📥 데이터 관리")
-            with st.expander("재고 파일 업로드", expanded=False):
-                st.caption("WMS .xls 파일을 업로드하여 서버의 재고 현황을 업데이트합니다.")
-                uploaded_stock = st.file_uploader("파일 선택", type=["xls"], key="stock_uploader_pred")
-                if uploaded_stock:
-                    if st.button("🚀 서버 반영", use_container_width=True, type="primary", key="btn_save_stock_pred"):
-                        with st.spinner("처리 중..."):
-                            stock_df = parse_wms_stock_file(uploaded_stock)
-                            if stock_df is not None:
-                                user_mail = st.session_state.get("user_email", "unknown")
-                                if save_inventory_status(stock_df, user_mail):
-                                    st.success("반영 완료")
-                                    st.rerun()
-            
-            if not inv_summary.empty:
-                last_update = inv_df["updated_at"].iloc[0] if "updated_at" in inv_df.columns else "알 수 없음"
-                st.caption(f"🕒 최종 업데이트: {last_update}")
+        if not inv_summary.empty:
+            last_update = inv_df["updated_at"].iloc[0] if "updated_at" in inv_df.columns else "알 수 없음"
+            st.caption(f"🕒 최종 업데이트: {last_update}")
 
-        with col_main:
-            # 1. 품목군 필터
-            _pred_groups = sorted(predict_summary["품목군"].dropna().unique().tolist())
-            selected_pred_groups = st.multiselect(
-                "📁 분석할 품목군 선택 (비워두면 전체)",
-                options=_pred_groups,
-                default=[],
-                key="pred_group_filter"
-            )
-            
-            # 2. 품목군 필터 결과에 따른 품목 목록 생성 (동적 필터링)
-            if selected_pred_groups:
-                _pred_items_options = sorted(predict_summary[predict_summary["품목군"].isin(selected_pred_groups)]["제품명"].unique().tolist())
+    with col_main:
+        _pred_groups = sorted(predict_summary["품목군"].dropna().unique().tolist()) if not predict_summary.empty else []
+        selected_pred_groups = st.multiselect(
+            "📁 분석할 품목군 선택 (비워두면 전체)",
+            options=_pred_groups,
+            default=[],
+            key="pred_group_filter"
+        )
+        
+        if selected_pred_groups:
+            _pred_items_options = sorted(predict_summary[predict_summary["품목군"].isin(selected_pred_groups)]["제품명"].unique().tolist())
+        else:
+            _pred_items_options = sorted(predict_summary["제품명"].unique().tolist()) if not predict_summary.empty else []
+        
+        selected_pred_items = st.multiselect(
+            "📦 분석할 품목 선택 (비워두면 전체)",
+            options=_pred_items_options,
+            default=[],
+            key="pred_item_filter"
+        )
+        
+        disp_predict = predict_summary.copy()
+        if selected_pred_groups:
+            disp_predict = disp_predict[disp_predict["품목군"].isin(selected_pred_groups)]
+        if selected_pred_items:
+            disp_predict = disp_predict[disp_predict["제품명"].isin(selected_pred_items)]
+
+        # 재고 데이터 결합
+        if not inv_summary.empty:
+            disp_predict = pd.merge(disp_predict, inv_summary, left_on="제품명", right_on="product_name", how="left").fillna(0)
+            disp_predict = disp_predict.rename(columns={"stock_qty": "현재고"})
+        else:
+            disp_predict["현재고"] = 0
+
+        # ITEM_MASTER 결합
+        if not disp_predict.empty and not item_master_df.empty:
+            disp_predict = pd.merge(disp_predict, item_master_df, left_on="제품명", right_on="상품명", how="left")
+            disp_predict["리드타임(일)"] = disp_predict["리드타임(일)"].fillna(0)
+            disp_predict["MOQ"] = disp_predict["MOQ"].fillna(0)
+        elif not disp_predict.empty:
+            disp_predict["리드타임(일)"] = 0
+            disp_predict["MOQ"] = 0
+
+        # 계산 로직
+        if not disp_predict.empty:
+            disp_predict["부족/초과 수량"] = disp_predict["현재고"] - disp_predict["예상 필요수량"]
+
+            def calc_status(row):
+                over_threshold = row["일평균 출고량"] * 30 * (inv_months + 1)
+                if row["현재고"] < row["예상 필요수량"]:
+                    return "부족"
+                elif row["현재고"] <= over_threshold:
+                    return "정상"
+                else:
+                    return "과잉"
+
+            disp_predict["재고 상태"] = disp_predict.apply(calc_status, axis=1)
+
+            def calc_exhaust_date(row):
+                if row["분석기간 출고량"] <= 0 or row["일평균 출고량"] <= 0:
+                    return "-"
+                days_left = row["현재고"] / row["일평균 출고량"]
+                if pd.isna(days_left) or np.isinf(days_left):
+                    return "-"
+                if days_left > 3650:
+                    return "> 10년"
+                ex_date = ref_date + pd.Timedelta(days=days_left)
+                return ex_date.strftime("%y-%m-%d")
+
+            disp_predict["예상 소진일"] = disp_predict.apply(calc_exhaust_date, axis=1)
+        else:
+            disp_predict["부족/초과 수량"] = 0
+            disp_predict["재고 상태"] = "-"
+            disp_predict["예상 소진일"] = "-"
+            disp_predict["리드타임(일)"] = 0
+            disp_predict["MOQ"] = 0
+
+        # 컬럼 순서 조정
+        final_cols = ["품목군", "제품명", "분석기간 출고량", "일평균 출고량", "예상 필요수량", "현재고", "부족/초과 수량", "재고 상태", "예상 소진일", "리드타임(일)", "MOQ"]
+        for c in final_cols:
+            if c not in disp_predict.columns:
+                if c in ["재고 상태", "예상 소진일", "품목군", "제품명"]:
+                    disp_predict[c] = "-"
+                else:
+                    disp_predict[c] = 0
+
+        disp_predict = disp_predict[final_cols]
+        if not disp_predict.empty:
+            disp_predict = disp_predict.sort_values("예상 필요수량", ascending=False)
+
+        st.markdown(f"#### 📦 제품별 예상 출고량 및 재고 현황 ({period_option}, {inv_option})")
+        
+        def highlight_stock_status(row):
+            status = row["재고 상태"]
+            if status == "부족":
+                return ['background-color: #fee2e2'] * len(row) # 연한 빨강
+            elif status == "과잉":
+                return ['background-color: #fef3c7'] * len(row) # 연한 노랑/주황
+            elif status == "정상":
+                return ['background-color: #dcfce7'] * len(row) # 연한 초록
+            return [''] * len(row)
+
+        st.dataframe(
+            disp_predict.style.apply(highlight_stock_status, axis=1).format({
+                "분석기간 출고량": "{:,.0f}",
+                "일평균 출고량": "{:,.1f}",
+                "예상 필요수량": "{:,.0f}",
+                "현재고": "{:,.0f}",
+                "부족/초과 수량": "{:,.0f}",
+                "리드타임(일)": "{:,.0f}",
+                "MOQ": "{:,.0f}"
+            }),
+            use_container_width=True,
+            height=700
+        )
+        
+        # 요약 인사이트 (메트릭)
+        m_col1, m_col2, m_col3, m_col4 = st.columns(4)
+        with m_col1:
+            total_req = disp_predict["예상 필요수량"].sum() if not disp_predict.empty else 0
+            st.metric("전체 예상 필요수량", f"{total_req:,.0f} 개")
+        with m_col2:
+            shortage_cnt = (disp_predict["재고 상태"] == "부족").sum() if not disp_predict.empty else 0
+            st.metric("부족 품목 수", f"{shortage_cnt:,.0f} 개")
+        with m_col3:
+            over_cnt = (disp_predict["재고 상태"] == "과잉").sum() if not disp_predict.empty else 0
+            st.metric("과잉 품목 수", f"{over_cnt:,.0f} 개")
+        with m_col4:
+            if not disp_predict.empty and total_req > 0:
+                top_item = disp_predict.iloc[0]['제품명']
+                st.write(f"🔥 **최다 예상 필요 품목:**")
+                st.write(f"{top_item}")
             else:
-                _pred_items_options = sorted(predict_summary["제품명"].unique().tolist())
-            
-            # 3. 품목 필터 추가
-            selected_pred_items = st.multiselect(
-                "📦 분석할 품목 선택 (비워두면 전체)",
-                options=_pred_items_options,
-                default=[],
-                key="pred_item_filter"
-            )
-            
-            # 최종 필터 적용
-            disp_predict = predict_summary.copy()
-            if selected_pred_groups:
-                disp_predict = disp_predict[disp_predict["품목군"].isin(selected_pred_groups)]
-            if selected_pred_items:
-                disp_predict = disp_predict[disp_predict["제품명"].isin(selected_pred_items)]
-
-            # 재고 데이터 결합 및 계산
-            if not inv_summary.empty:
-                disp_predict = pd.merge(
-                    disp_predict, 
-                    inv_summary, 
-                    left_on="제품명", 
-                    right_on="product_name", 
-                    how="left"
-                ).fillna(0)
-                disp_predict["재고일수"] = np.where(
-                    disp_predict["일평균 출고량"] > 0,
-                    disp_predict["stock_qty"] / disp_predict["일평균 출고량"],
-                    0
-                )
-                disp_predict = disp_predict.rename(columns={"stock_qty": "현재고"})
-                # 컬럼 순서 조정
-                final_cols = ["품목군", "제품명", "기간내 총출고량", "일평균 출고량", "다음 달 예상 출고량", "현재고", "재고일수"]
-                disp_predict = disp_predict[final_cols]
-            else:
-                disp_predict["현재고"] = 0
-                disp_predict["재고일수"] = 0
-
-            st.markdown(f"#### 📦 제품별 예상 출고량 및 재고 현황 ({period_option})")
-            
-            # 스타일링: 재고 부족 품목 하이라이트
-            def highlight_low_stock(row):
-                if 0 < row["재고일수"] < 14:
-                    return ['background-color: #fee2e2'] * len(row) # Red
-                elif 14 <= row["재고일수"] < 30:
-                    return ['background-color: #fef3c7'] * len(row) # Orange
-                return [''] * len(row)
-
-            st.dataframe(
-                disp_predict.style.apply(highlight_low_stock, axis=1).format({
-                    "기간내 총출고량": "{:,.0f}",
-                    "일평균 출고량": "{:,.1f}",
-                    "다음 달 예상 출고량": "{:,.0f}",
-                    "현재고": "{:,.0f}",
-                    "재고일수": "{:,.1f}일"
-                }),
-                use_container_width=True,
-                height=700
-            )
-            
-            # 요약 인사이트 (메트릭)
-            m_col1, m_col2 = st.columns(2)
-            with m_col1:
-                total_predicted = disp_predict["다음 달 예상 출고량"].sum()
-                st.metric("전체 예상 총 출고량", f"{total_predicted:,.0f} 개")
-            with m_col2:
-                if not disp_predict.empty:
-                    top_item = disp_predict.iloc[0]
-                    st.write(f"🔥 **최다 출고 예상:** {top_item['제품명']}")
-
+                st.write(f"🔥 **최다 예상 필요 품목:**")
+                st.write(f"-")
 
     st.markdown('</div>', unsafe_allow_html=True)
 
