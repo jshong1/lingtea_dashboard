@@ -3958,8 +3958,8 @@ if current_tab_key == "예상출고량분석":
     with col_side:
         st.markdown("#### 📥 데이터 관리")
         with st.expander("재고 파일 업로드", expanded=False):
-            st.caption("WMS 재고 파일을 업로드하면 업로드 시점 기준 현재고가 반영됩니다.")
-            st.caption("현재고는 실시간 WMS 연동값이 아니라 마지막 업로드 기준입니다.")
+            st.caption("WMS 재고 파일을 업로드하면 업로드 시점 기준의 재고가 반영됩니다.")
+            st.caption("업로드 시점 재고는 실시간 WMS 연동값이 아니라 마지막 업로드 기준입니다.")
             uploaded_stock = st.file_uploader("파일 선택", type=["xls"], key="stock_uploader_pred")
             if uploaded_stock:
                 if st.button("🚀 서버 반영", use_container_width=True, type="primary", key="btn_save_stock_pred"):
@@ -4005,9 +4005,9 @@ if current_tab_key == "예상출고량분석":
         # 재고 데이터 결합
         if not inv_summary.empty:
             disp_predict = pd.merge(disp_predict, inv_summary, left_on="제품명", right_on="product_name", how="left").fillna(0)
-            disp_predict = disp_predict.rename(columns={"stock_qty": "현재고"})
+            disp_predict = disp_predict.rename(columns={"stock_qty": "업로드 시점 재고"})
         else:
-            disp_predict["현재고"] = 0
+            disp_predict["업로드 시점 재고"] = 0
 
         # ITEM_MASTER 결합
         if not disp_predict.empty and not item_master_df.empty:
@@ -4020,13 +4020,13 @@ if current_tab_key == "예상출고량분석":
 
         # 계산 로직
         if not disp_predict.empty:
-            disp_predict["부족/초과 수량"] = disp_predict["현재고"] - disp_predict["예상 필요수량"]
+            disp_predict["부족/초과 수량"] = disp_predict["업로드 시점 재고"] - disp_predict["예상 필요수량"]
 
             def calc_status(row):
                 over_threshold = row["일평균 출고량"] * 30 * (inv_months + 1)
-                if row["현재고"] < row["예상 필요수량"]:
+                if row["업로드 시점 재고"] < row["예상 필요수량"]:
                     return "부족"
-                elif row["현재고"] <= over_threshold:
+                elif row["업로드 시점 재고"] <= over_threshold:
                     return "정상"
                 else:
                     return "과잉"
@@ -4036,7 +4036,7 @@ if current_tab_key == "예상출고량분석":
             def calc_exhaust_date(row):
                 if row["분석기간 출고량"] <= 0 or row["일평균 출고량"] <= 0:
                     return "-"
-                days_left = row["현재고"] / row["일평균 출고량"]
+                days_left = row["업로드 시점 재고"] / row["일평균 출고량"]
                 if pd.isna(days_left) or np.isinf(days_left):
                     return "-"
                 if days_left > 3650:
@@ -4053,7 +4053,7 @@ if current_tab_key == "예상출고량분석":
             disp_predict["MOQ"] = 0
 
         # 컬럼 순서 조정
-        final_cols = ["품목군", "제품명", "분석기간 출고량", "일평균 출고량", "예상 필요수량", "현재고", "부족/초과 수량", "재고 상태", "예상 소진일", "리드타임(일)", "MOQ"]
+        final_cols = ["품목군", "제품명", "분석기간 출고량", "일평균 출고량", "예상 필요수량", "업로드 시점 재고", "부족/초과 수량", "재고 상태", "예상 소진일", "리드타임(일)", "MOQ"]
         for c in final_cols:
             if c not in disp_predict.columns:
                 if c in ["재고 상태", "예상 소진일", "품목군", "제품명"]:
@@ -4082,7 +4082,7 @@ if current_tab_key == "예상출고량분석":
                 "분석기간 출고량": "{:,.0f}",
                 "일평균 출고량": "{:,.1f}",
                 "예상 필요수량": "{:,.0f}",
-                "현재고": "{:,.0f}",
+                "업로드 시점 재고": "{:,.0f}",
                 "부족/초과 수량": "{:,.0f}",
                 "리드타임(일)": "{:,.0f}",
                 "MOQ": "{:,.0f}"
