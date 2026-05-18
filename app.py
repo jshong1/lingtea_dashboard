@@ -499,6 +499,54 @@ def delete_session(token: str):
             pass
 
 # -----------------------------------
+# 채널 표시 프리셋 Firestore 관리
+# -----------------------------------
+def get_channel_presets(uid: str):
+    if not uid:
+        return []
+    try:
+        presets_ref = db.collection("users").document(uid).collection("channel_order_presets")
+        docs = presets_ref.stream()
+        presets = []
+        for doc in docs:
+            d = doc.to_dict()
+            d["id"] = doc.id
+            presets.append(d)
+        return presets
+    except Exception as e:
+        return []
+
+def save_channel_preset(uid: str, preset_name: str, items: list, preset_id: str = None, exclude_unlisted: bool = True, include_total_row: bool = True):
+    if not uid:
+        return False, "로그인이 유효하지 않습니다."
+    try:
+        presets_ref = db.collection("users").document(uid).collection("channel_order_presets")
+        data = {
+            "preset_name": preset_name,
+            "target_table": "channel_monthly_sales_ratio",
+            "items": items,
+            "exclude_unlisted": exclude_unlisted,
+            "include_total_row": include_total_row,
+            "updated_at": datetime.now().isoformat()
+        }
+        if preset_id:
+            presets_ref.document(preset_id).set(data, merge=True)
+        else:
+            presets_ref.add(data)
+        return True, "성공"
+    except Exception as e:
+        return False, str(e)
+
+def delete_channel_preset(uid: str, preset_id: str):
+    if not uid or not preset_id:
+        return False, "유효하지 않은 요청입니다."
+    try:
+        db.collection("users").document(uid).collection("channel_order_presets").document(preset_id).delete()
+        return True, "성공"
+    except Exception as e:
+        return False, str(e)
+
+# -----------------------------------
 # 로그인 처리
 # -----------------------------------
 def handle_login(email: str, password: str):
@@ -2707,6 +2755,127 @@ if current_tab_key == "채널분석":
         st.plotly_chart(fig_ch_g, use_container_width=True)
 
     st.subheader("💰 월별 채널별 매출액 및 구성비")
+
+    # ── [신규] 채널 표시 프리셋 UI ──
+    uid = st.session_state.get("uid")
+    presets = []
+    selected_preset = None
+
+    use_preset = st.toggle("채널 표시 프리셋 사용", key="use_channel_preset")
+
+    if use_preset:
+        presets = get_channel_presets(uid)
+        if not presets:
+            st.info("등록된 채널 표시 프리셋이 없습니다. 아래 '프리셋 편집' 영역에서 새 프리셋을 저장해보세요.")
+        else:
+            preset_options = {p["id"]: p["preset_name"] for p in presets}
+            selected_preset_id = st.selectbox(
+                "적용할 프리셋 선택",
+                options=list(preset_options.keys()),
+                format_func=lambda x: preset_options[x],
+                key="selected_preset_id_val"
+            )
+            selected_preset = next((p for p in presets if p["id"] == selected_preset_id), None)
+
+    with st.expander("🛠️ 채널 표시 프리셋 편집", expanded=False):
+        default_preset_name = selected_preset.get("preset_name", "") if selected_preset else ""
+        preset_name_input = st.text_input("프리셋 이름", value=default_preset_name, key="channel_preset_name_input")
+
+        current_channels = sorted(filtered_df["거래처분류"].dropna().unique().tolist())
+
+        preset_items_dict = {}
+        if selected_preset:
+            preset_items_dict = {item["source"]: item for item in selected_preset.get("items", [])}
+
+        edit_items = []
+        for idx, ch in enumerate(current_channels):
+            if ch in preset_items_dict:
+                edit_items.append({
+                    "include": preset_items_dict[ch].get("include", True),
+                    "source": ch,
+                    "display": preset_items_dict[ch].get("display", ch),
+                    "order": int(preset_items_dict[ch].get("order", idx + 1))
+                })
+            else:
+                edit_items.append({
+                    "include": False if selected_preset else True,
+                    "source": ch,
+                    "display": ch,
+                    "order": idx + 1
+                })
+
+        edit_df = pd.DataFrame(edit_items)
+
+        edited_df = st.data_editor(
+            edit_df,
+            column_config={
+                "include": st.column_config.CheckboxColumn("포함여부", default=True),
+                "source": st.column_config.TextColumn("원본 채널명", disabled=True),
+                "display": st.column_config.TextColumn("표시 채널명"),
+                "order": st.column_config.NumberColumn("표시순서", format="%d", step=1)
+            },
+            use_container_width=True,
+            hide_index=True,
+            key="channel_preset_data_editor"
+        )
+
+        col_save, col_save_new, col_del = st.columns(3)
+
+        edited_items = edited_df.to_dict(orient="records")
+        active_sources = set(current_channels)
+        preserved_items = []
+        if selected_preset:
+            preserved_items = [item for item in selected_preset.get("items", []) if item.get("source") not in active_sources]
+        final_items = edited_items + preserved_items
+
+        if col_save.button("💾 기존 프리셋에 저장", use_container_width=True, disabled=(selected_preset is None)):
+            if selected_preset:
+                preset_name = preset_name_input.strip()
+                if not preset_name:
+                    st.warning("프리셋 이름을 입력해주세요.")
+                else:
+                    success, msg = save_channel_preset(
+                        uid=uid,
+                        preset_name=preset_name,
+                        items=final_items,
+                        preset_id=selected_preset["id"],
+                        exclude_unlisted=True,
+                        include_total_row=True
+                    )
+                    if success:
+                        st.success(f"'{preset_name}' 프리셋이 성공적으로 업데이트되었습니다.")
+                        st.rerun()
+                    else:
+                        st.error(f"프리셋 저장 실패: {msg}")
+
+        if col_save_new.button("✨ 새 프리셋으로 저장", use_container_width=True):
+            preset_name = preset_name_input.strip()
+            if not preset_name:
+                st.warning("프리셋 이름을 입력해주세요.")
+            else:
+                success, msg = save_channel_preset(
+                    uid=uid,
+                    preset_name=preset_name,
+                    items=final_items,
+                    preset_id=None,
+                    exclude_unlisted=True,
+                    include_total_row=True
+                )
+                if success:
+                    st.success(f"'{preset_name}' 새 프리셋이 생성되었습니다.")
+                    st.rerun()
+                else:
+                    st.error(f"프리셋 생성 실패: {msg}")
+
+        if col_del.button("🗑️ 프리셋 삭제", use_container_width=True, disabled=(selected_preset is None)):
+            if selected_preset:
+                success, msg = delete_channel_preset(uid=uid, preset_id=selected_preset["id"])
+                if success:
+                    st.success(f"'{selected_preset['preset_name']}' 프리셋이 삭제되었습니다.")
+                    st.rerun()
+                else:
+                    st.error(f"프리셋 삭제 실패: {msg}")
+
     ch_sales_pivot = pd.pivot_table(
         filtered_df, values="품목별매출(VAT제외)", index="거래처분류",
         columns="출고년월", aggfunc="sum", fill_value=0
@@ -2715,7 +2884,44 @@ if current_tab_key == "채널분석":
     ch_sales_pivot = ch_sales_pivot.reindex(columns=ch_sales_mcols)
     ch_month_totals = ch_sales_pivot.sum()
     ch_sales_pivot = add_total_row(ch_sales_pivot)
-    ch_sales_pivot = sort_pivot_by_last_month(ch_sales_pivot, ch_sales_mcols)
+
+    # ── 프리셋 적용 및 정렬 ──
+    preset_applied = False
+    if use_preset and selected_preset:
+        try:
+            total_row = ch_sales_pivot.loc[["[합계]"]] if "[합계]" in ch_sales_pivot.index else None
+            data_part = ch_sales_pivot.drop(index="[합계]", errors="ignore")
+
+            items = selected_preset.get("items", [])
+            included_items = [item for item in items if item.get("include", True)]
+
+            def get_item_order(x):
+                try:
+                    return (int(x.get("order", 9999)), str(x.get("source", "")))
+                except:
+                    return (9999, str(x.get("source", "")))
+
+            sorted_items = sorted(included_items, key=get_item_order)
+
+            sources = [item["source"] for item in sorted_items if item["source"] in data_part.index]
+            data_part = data_part.reindex(sources)
+
+            display_map = {item["source"]: item.get("display", item["source"]) for item in sorted_items}
+            data_part.index = [display_map.get(idx, idx) for idx in data_part.index]
+
+            include_total_row = selected_preset.get("include_total_row", True)
+            if include_total_row and total_row is not None:
+                ch_sales_pivot = pd.concat([total_row, data_part])
+            else:
+                ch_sales_pivot = data_part
+
+            preset_applied = True
+        except Exception as e:
+            st.error(f"프리셋 적용 중 오류가 발생했습니다. 기존 정렬 방식으로 대체합니다: {e}")
+            preset_applied = False
+
+    if not preset_applied:
+        ch_sales_pivot = sort_pivot_by_last_month(ch_sales_pivot, ch_sales_mcols)
 
     ch_display_cols = []
     for m in ch_sales_mcols:
