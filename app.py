@@ -77,13 +77,13 @@ st.set_page_config(page_title="Lingtea Dashboard", layout="wide")
 
 SHEET_ID = "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
 
-ALL_TABS = ["경영진요약", "월별추이", "주차별추이", "채널분석", "제품분석", "YoY분석", "공헌이익분석(통합)", "공헌이익분석(국내)", "공헌이익분석(해외)", "제품별원가", "확정비교", "예상출고량분석", "AI분석", "다운로드"]
+ALL_TABS = ["대시보드요약", "월별추이", "주차별추이", "채널분석", "제품분석", "YoY분석", "공헌이익분석(통합)", "공헌이익분석(국내)", "공헌이익분석(해외)", "제품별원가", "확정비교", "예상출고량분석", "AI분석", "다운로드"]
 
 DEFAULT_USER_TABS = {t: False for t in ALL_TABS}
 DEFAULT_ADMIN_TABS = {t: True for t in ALL_TABS}
 
 tab_defs = {
-    "경영진요약":        "👔 경영진 요약",
+    "대시보드요약":        "👔 대시보드 요약",
     "월별추이":         "📈 월별 추이",
     "주차별추이":       "📅 주차별 추이",
     "채널분석":         "🏪 채널 분석",
@@ -320,6 +320,35 @@ html, body, [class*="css"] {
     font-family: 'Noto Sans KR', sans-serif !important;
 }
 
+/* 메인 컨테이너 패딩 조절로 최상단 빈 여백 제거 */
+[data-testid="block-container"] {
+    padding-top: 1.0rem !important;
+    padding-bottom: 1rem !important;
+}
+[data-testid="stHeader"] {
+    height: 0px !important;
+    min-height: 0px !important;
+    padding: 0 !important;
+    display: none !important;
+}
+
+/* 날짜 필터 고정 (Sticky) */
+div[data-testid="stVerticalBlock"] > div:has(.filter-container) {
+    position: -webkit-sticky;
+    position: sticky;
+    top: 0;
+    z-index: 999;
+    background-color: #F8F9FA !important;
+    padding: 0px 0px 5px 0px !important;
+    border-bottom: 1px solid #E9ECEF !important;
+    margin-bottom: 0px !important;
+}
+
+/* 스타일 전용 st.markdown이 생성하는 빈 공간 제거 (차트에 영향 없음) */
+div[data-testid="element-container"]:has(div.stMarkdown > div[data-testid="stMarkdownContainer"] > style) {
+    display: none !important;
+}
+
 /* 사이드바 메뉴 스타일 */
 .stRadio > div {
     gap: 0px !important;
@@ -341,15 +370,15 @@ html, body, [class*="css"] {
 }
 
 
-/* 카드 스타일 컨테이너 (구분선 스타일로 변경) */
+/* 카드 스타일 컨테이너 (구분선 스타일 및 상하단 공백 극단적으로 축소) */
 .dashboard-card {
     background-color: transparent;
-    padding: 24px 0px;
+    padding: 8px 0px 16px 0px !important;
     border-radius: 0px;
     box-shadow: none;
     border: none;
     border-bottom: 1px solid #E9ECEF;
-    margin-bottom: 32px;
+    margin-bottom: 16px !important;
 }
 
 /* KPI 메트릭 스타일 */
@@ -377,12 +406,11 @@ html, body, [class*="css"] {
 /* 필터 섹션 (구분선 스타일로 변경) */
 .filter-container {
     background-color: transparent;
-    padding: 20px 0px;
+    padding: 8px 0px !important;
     border-radius: 0px;
     box-shadow: none;
     border: none;
-    border-bottom: 1px solid #E9ECEF;
-    margin-bottom: 24px;
+    margin-bottom: 0px !important;
 }
 </style>
 """
@@ -1478,9 +1506,6 @@ if "channel_dept_map" not in st.session_state:
 # -----------------------------------
 st.markdown(DASHBOARD_CSS, unsafe_allow_html=True)
 
-# 상단 헤더 영역
-st.markdown(f'<div class="main-header">{selected_menu_label}</div>', unsafe_allow_html=True)
-st.markdown('<div class="sub-header">데이터 기반 비즈니스 인사이트 플랫폼</div>', unsafe_allow_html=True)
 
 # -----------------------------------
 # [신규] 이상 징후 감지 알림 (Global Anomaly Alerts)
@@ -1638,8 +1663,7 @@ import datetime as _dt
 _date_start_dt = pd.Timestamp(_date_start)
 _date_end_dt   = pd.Timestamp(_date_end) + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
 
-# 이상 징후 알림 렌더링 (필터링된 날짜 기준)
-render_anomaly_alerts(df, _date_end_dt)
+
 
 # all_months: 전체 데이터 기준 월 목록 (공헌이익 탭 비용표 등에서 사용)
 all_months = sort_month_cols(df["출고년월"].dropna().unique().tolist())
@@ -1818,6 +1842,10 @@ c4.metric("매출 총 이익률",               f"{gross_profit_rate:.2f}%")
 c5.metric("Top 채널", top_channel,        delta=f"{sales_mom:.2f}% MoM")
 st.markdown('</div>', unsafe_allow_html=True)
 
+# 이상 징후 알림 렌더링 (필터링된 날짜 기준)
+render_anomaly_alerts(df, _date_end_dt)
+
+
 # -----------------------------
 # [Option B] 매출조정 포함: 모든 메뉴에서 동일한 가매출 집계 기준 사용
 # 품목/품목군 상세 차트는 각 섹션 내에서 __매출조정__ 제외 필터를 별도 적용
@@ -1833,11 +1861,11 @@ if not current_tab_key and "관리자" in selected_menu_label:
     current_tab_key = "admin_setting"
 
 # ===================================
-# TAB 0: 경영진 요약 (admin only)
+# TAB 0: 대시보드 요약 (admin only)
 # ===================================
-if current_tab_key == "경영진요약":
+if current_tab_key == "대시보드요약":
     st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
-    st.subheader("👔 경영진 요약 대시보드")
+    st.subheader("👔 대시보드 요약")
     st.caption("채널/품목 수익성, AI 종합 분석을 한 화면에서 확인합니다. 각 섹션은 접을 수 있습니다.")
 
     # ── 공통 히트맵 colorscale ──
@@ -2133,7 +2161,7 @@ if current_tab_key == "경영진요약":
         _exec_system = f"""당신은 링티(Lingtea) 비즈니스 데이터 전문가입니다. 다음 데이터를 바탕으로 대답하세요.
 {_exec_ctx}
 - 숫자를 기반으로 구체적이고 객관적인 답변을 제공하세요.
-- 경영진 관점에서 인사이트를 포함하세요. 한국어로 답변하세요."""
+- 대시보드 관점에서 인사이트를 포함하세요. 한국어로 답변하세요."""
 
         # 채팅 히스토리 표시
         for msg in st.session_state["exec_chat_history"]:
@@ -2204,7 +2232,7 @@ if current_tab_key == "경영진요약":
 
         if _exec_run or st.session_state.get("exec_ai_report") == "__running__":
             st.session_state["exec_ai_report"] = "__running__"
-            with st.spinner("AI가 경영진 보고용 분석을 생성 중입니다... (15~30초 소요)"):
+            with st.spinner("AI가 보고용 분석을 생성 중입니다... (15~30초 소요)"):
                 try:
                     _exec_report = call_claude_api(
                         _exec_report_system,
@@ -2215,7 +2243,7 @@ if current_tab_key == "경영진요약":
                             "3. 🏪 채널 분석 (상위/하위 채널, 공헌이익 관점 효율성, 집중도 리스크)\n"
                             "4. 📦 품목군 분석 (기여도 높은/낮은 품목군, 성장률 주목 품목)\n"
                             "5. ⚠️ 리스크 & 기회 요인\n"
-                            "6. 💡 경영진 추천 액션 (구체적으로 2~3가지, 우선순위 포함)"
+                            "6. 💡 추천 액션 (구체적으로 2~3가지, 우선순위 포함)"
                         )}],
                         max_tokens=2048,
                     )
@@ -5106,7 +5134,7 @@ if tab_allowed("AI분석"):
                 _local_ctx = var_ctx
             except NameError:
                 pass
-        elif current_tab_key in ["채널분석", "제품분석", "경영진요약"]:
+        elif current_tab_key in ["채널분석", "제품분석", "대시보드요약"]:
             _local_ctx = f"선택된 기간: {_date_start_dt} ~ {_date_end_dt}\n" + build_common_ai_context(filtered_df)
         else:
             # 기본 폴백
