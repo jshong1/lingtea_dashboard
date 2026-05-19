@@ -1285,26 +1285,102 @@ with st.sidebar:
     _load_months = _months_map[_lookback_label]
 
     df = get_processed_dataset(months=_load_months)
+    # ── 권한 필터링 전의 원본 데이터를 백업 (예상 출고량 분석 탭 등에서 활용) ──
+    full_raw_df = df.copy()
+
+    # ── [v7.3] AUTH_MASTER 기반 권한 필터링 ──
+    _current_email = st.session_state.get("email", "").strip().lower()
+
+    try:
+        # [수정] load_auth_master 반환값 5개로 변경
+        _auth_df, _email_col, _dept_col, _role_type_col, _item_group_col = load_auth_master()
+
+        if _email_col is None or _dept_col is None:
+            st.error("🚫 AUTH_MASTER 컬럼 구조를 인식할 수 없습니다. (e-mail / 담당부서 컬럼 확인 필요)")
+            st.stop()
+
+        _user_row = _auth_df[_auth_df[_email_col] == _current_email]
+        if _user_row.empty:
+            st.error("🚫 접근 권한이 없습니다. 관리자에게 담당부서 권한을 요청하세요.")
+            st.stop()
+
+        _row0      = _user_row.iloc[0]
+        _user_dept = str(_row0[_dept_col]).strip()
+
+        if not _user_dept or _user_dept in ("nan", ""):
+            st.error("🚫 접근 권한이 없습니다. 담당부서가 지정되지 않았습니다.")
+            st.stop()
+
+        # 권한유형 읽기 — 컬럼 없으면 담당부서 값으로 하위 호환
+        _role_type = str(_row0[_role_type_col]).strip() if _role_type_col else (
+            "관리자" if _user_dept == "관리자" else "부서기반"
+        )
+
+        # 품목군 읽기 — 쉼표 구분 split, 공백 제거
+        _item_group_raw = str(_row0[_item_group_col]).strip() if _item_group_col else "ALL"
+        _user_items = [x.strip() for x in _item_group_raw.split(",") if x.strip()]
+
+        # 권한유형 기반 3-way 필터링
+        if _role_type == "관리자":
+            pass  # 전체 데이터 (필터 없음)
+        elif _role_type == "부서기반":
+            # 자신의 담당부서 데이터만 조회
+            df = df[df["담당부서"] == _user_dept].copy()
+        elif _role_type == "PM":
+            # 모든 채널 조회 가능, 품목군 기준 필터
+            if "ALL" not in _user_items:
+                df = df[df["품목군"].isin(_user_items)].copy()
+        else:
+            st.error(f"🚫 알 수 없는 권한유형입니다: {_role_type}")
+            st.stop()
+
+        # 세션에 저장 (관리자 UI 등에서 활용)
+        st.session_state["user_role_type"] = _role_type
+        st.session_state["user_dept"]      = _user_dept
+        st.session_state["user_items"]     = _user_items
+
+    except Exception as _e:
+        import traceback
+        st.error(f"🚫 권한 확인 중 오류가 발생했습니다: {_e}")
+        st.code(traceback.format_exc())   # 정확한 줄번호/원인 화면 출력
+        st.stop()
+
     client = get_gspread_client()
     sh     = client.open_by_key(SHEET_ID)
 
     st.divider()
     with st.expander("🔍 상세 필터 (채널/품목)", expanded=False):
         st.markdown("**🏪 채널 필터**")
-        _all_depts = sorted(df["담당부서"].dropna().replace("", None).dropna().unique().tolist())
-        selected_depts = st.multiselect(
-            "담당부서",
-            options=_all_depts,
-            default=[],
-            key=f"filter_depts_{st.session_state['reset_count']}"
-        )
+        _user_role_type = st.session_state.get("user_role_type", "")
+        _user_dept_val = st.session_state.get("user_dept", "")
 
-        if selected_depts:
+        if _user_role_type == "부서기반":
+            _all_depts = [_user_dept_val] if _user_dept_val else []
+            selected_depts = st.multiselect(
+                "담당부서",
+                options=_all_depts,
+                default=_all_depts,
+                key=f"filter_depts_{st.session_state['reset_count']}",
+                disabled=True
+            )
+            # 부서기반은 강제로 자신의 부서 채널만 가져옴
             _dept_filtered_channels = sorted(
-                df[df["담당부서"].isin(selected_depts)]["거래처분류"].dropna().unique().tolist()
+                df[df["담당부서"] == _user_dept_val]["거래처분류"].dropna().unique().tolist()
             )
         else:
-            _dept_filtered_channels = sorted(df["거래처분류"].dropna().unique().tolist())
+            _all_depts = sorted(df["담당부서"].dropna().replace("", None).dropna().unique().tolist())
+            selected_depts = st.multiselect(
+                "담당부서",
+                options=_all_depts,
+                default=[],
+                key=f"filter_depts_{st.session_state['reset_count']}"
+            )
+            if selected_depts:
+                _dept_filtered_channels = sorted(
+                    df[df["담당부서"].isin(selected_depts)]["거래처분류"].dropna().unique().tolist()
+                )
+            else:
+                _dept_filtered_channels = sorted(df["거래처분류"].dropna().unique().tolist())
 
         _ch_select_all = st.checkbox("채널 전체 선택", value=True, key=f"ch_select_all_{st.session_state['reset_count']}")
         if _ch_select_all:
@@ -1348,6 +1424,10 @@ with st.sidebar:
                 default=_ig_filtered_items,
                 key=f"filter_items_{st.session_state['reset_count']}"
             )
+            
+        # UI에서 예상 출고량 분석 메뉴가 선택된 경우 필터 미적용 안내
+        if st.session_state.get("main_menu") == "🔮 예상 출고량 분석":
+            st.info("💡 예상 출고량 분석은 정확한 값을 위해 위 상세 필터(채널/품목) 설정과 무관하게 전체 데이터 기준으로 조회됩니다.")
 
     st.divider()
     st.markdown("### 🧭 내비게이션")
@@ -1367,72 +1447,8 @@ with st.sidebar:
 
 
 # -----------------------------------
-# [v7.3] AUTH_MASTER 기반 권한 필터링
-# 권한유형: 관리자 / 부서기반 / PM
-# 관리자  → 전체 데이터 (필터 없음)
-# 부서기반 → 담당부서 일치 데이터만
-# PM      → 품목군 기준 필터 (모든 채널 조회 가능)
+# [v7.3] AUTH_MASTER 기반 권한 필터링 (상단 sidebar 영역으로 이동됨)
 # -----------------------------------
-_current_email = st.session_state.get("email", "").strip().lower()
-
-try:
-    # [수정] load_auth_master 반환값 5개로 변경
-    _auth_df, _email_col, _dept_col, _role_type_col, _item_group_col = load_auth_master()
-
-    if _email_col is None or _dept_col is None:
-        st.error("🚫 AUTH_MASTER 컬럼 구조를 인식할 수 없습니다. (e-mail / 담당부서 컬럼 확인 필요)")
-        st.stop()
-
-    _user_row = _auth_df[_auth_df[_email_col] == _current_email]
-    if _user_row.empty:
-        st.error("🚫 접근 권한이 없습니다. 관리자에게 담당부서 권한을 요청하세요.")
-        st.stop()
-
-    _row0      = _user_row.iloc[0]
-    _user_dept = str(_row0[_dept_col]).strip()
-
-    if not _user_dept or _user_dept in ("nan", ""):
-        st.error("🚫 접근 권한이 없습니다. 담당부서가 지정되지 않았습니다.")
-        st.stop()
-
-    # [신규] 권한유형 읽기 — 컬럼 없으면 담당부서 값으로 하위 호환
-    # (기존 "관리자" 담당부서 로직 유지)
-    _role_type = str(_row0[_role_type_col]).strip() if _role_type_col else (
-        "관리자" if _user_dept == "관리자" else "부서기반"
-    )
-
-    # [신규] 품목군 읽기 — 쉼표 구분 split, 공백 제거
-    _item_group_raw = str(_row0[_item_group_col]).strip() if _item_group_col else "ALL"
-    _user_items = [x.strip() for x in _item_group_raw.split(",") if x.strip()]
-
-    # [신규] 권한유형 기반 3-way 필터링
-    if _role_type == "관리자":
-        pass  # 전체 데이터 (필터 없음)
-
-    elif _role_type == "부서기반":
-        # 자신의 담당부서 데이터만 조회
-        df = df[df["담당부서"] == _user_dept].copy()
-
-    elif _role_type == "PM":
-        # 모든 채널 조회 가능, 품목군 기준 필터
-        if "ALL" not in _user_items:
-            df = df[df["품목군"].isin(_user_items)].copy()
-
-    else:
-        # 알 수 없는 권한유형 → 안전하게 차단
-        st.error(f"🚫 알 수 없는 권한유형입니다: {_role_type}")
-        st.stop()
-
-    # 세션에 저장 (관리자 UI 등에서 활용)
-    st.session_state["user_role_type"] = _role_type
-    st.session_state["user_dept"]      = _user_dept
-    st.session_state["user_items"]     = _user_items
-
-except Exception as _e:
-    import traceback
-    st.error(f"🚫 권한 확인 중 오류가 발생했습니다: {_e}")
-    st.code(traceback.format_exc())   # 정확한 줄번호/원인 화면 출력
-    st.stop()
 
 if "logistics_table" not in st.session_state or not st.session_state.get("ad_cost_monthly"):
     logistics_dict, ad_dict = load_cost_input(SHEET_ID)
@@ -4141,7 +4157,8 @@ if current_tab_key == "예상출고량분석":
             return pd.DataFrame(columns=["상품명", "리드타임(일)", "MOQ"])
 
     # 1. 기준일 파악 (데이터셋 내 마지막 출고일 및 필터 종료일)
-    last_date = df["출고일자"].max()
+    # 예상출고량분석 메뉴는 권한 필터 및 사이드바 필터에 영향을 받지 않고 전체 기준으로 분석을 진행합니다.
+    last_date = full_raw_df["출고일자"].max()
     if pd.isna(last_date):
         st.warning("데이터에 출고일자 정보가 없어 분석을 진행할 수 없습니다.")
         st.stop()
@@ -4184,7 +4201,7 @@ if current_tab_key == "예상출고량분석":
     st.caption(f"📅 **기준일:** {ref_date.date()} &nbsp;|&nbsp; **분석기간:** {start_date.date()} ~ {ref_date.date()} &nbsp;|&nbsp; **분석 기준 기간:** {period_option} &nbsp;|&nbsp; **재고 기준:** {inv_option}")
 
     # 3. 기간 내 데이터 필터링
-    period_df = df[(df["출고일자"].dt.normalize() >= start_date) & (df["출고일자"].dt.normalize() <= ref_date)].copy()
+    period_df = full_raw_df[(full_raw_df["출고일자"].dt.normalize() >= start_date) & (full_raw_df["출고일자"].dt.normalize() <= ref_date)].copy()
 
     if period_df.empty:
         st.warning("선택한 분석기간 내에 출고 데이터가 없습니다.")
@@ -4199,7 +4216,7 @@ if current_tab_key == "예상출고량분석":
         predict_summary["예상 필요수량"] = (predict_summary["일평균 출고량"] * 30 * inv_months).round(0)
         
         # 품목군 매핑
-        item_map = df[["내품상품명", "품목군"]].drop_duplicates("내품상품명").set_index("내품상품명")["품목군"].to_dict()
+        item_map = full_raw_df[["내품상품명", "품목군"]].drop_duplicates("내품상품명").set_index("내품상품명")["품목군"].to_dict()
         predict_summary["품목군"] = predict_summary["제품명"].map(item_map)
         
         # 노이즈 품목군 제거 (__미분류__, __매출조정__)
