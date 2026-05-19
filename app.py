@@ -377,7 +377,6 @@ div[data-testid="element-container"]:has(div.stMarkdown > div[data-testid="stMar
     border-radius: 0px;
     box-shadow: none;
     border: none;
-    border-bottom: 1px solid #E9ECEF;
     margin-bottom: 16px !important;
 }
 
@@ -403,7 +402,7 @@ div[data-testid="element-container"]:has(div.stMarkdown > div[data-testid="stMar
     margin-bottom: 2rem;
 }
 
-/* 필터 섹션 (구분선 스타일로 변경) */
+/* 필터 섹션 (구분선 제거) */
 .filter-container {
     background-color: transparent;
     padding: 8px 0px !important;
