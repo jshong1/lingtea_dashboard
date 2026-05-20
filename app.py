@@ -4258,6 +4258,16 @@ if current_tab_key == "예상출고량분석":
     if inv_df is not None and not inv_df.empty:
         inv_summary = inv_df.groupby("product_name")["stock_qty"].sum().reset_index()
 
+    # WMS 업로드 날짜 파싱 (예상 소진일 기산점으로 사용)
+    wms_upload_date = None
+    if inv_df is not None and not inv_df.empty and "updated_at" in inv_df.columns:
+        try:
+            wms_upload_date = pd.to_datetime(inv_df["updated_at"].iloc[0]).normalize()
+        except Exception:
+            wms_upload_date = None
+    if wms_upload_date is None:
+        wms_upload_date = ref_date  # WMS 파일 없을 경우 분석 종료일로 fallback
+
     # ITEM_MASTER 로드
     item_master_df = load_item_master_details()
 
@@ -4350,7 +4360,8 @@ if current_tab_key == "예상출고량분석":
                     return "-"
                 if days_left > 3650:
                     return "> 10년"
-                ex_date = ref_date + pd.Timedelta(days=days_left)
+                # WMS 파일 업로드일 기준으로 소진일 산정
+                ex_date = wms_upload_date + pd.Timedelta(days=days_left)
                 return ex_date.strftime("%y-%m-%d")
 
             disp_predict["예상 소진일"] = disp_predict.apply(calc_exhaust_date, axis=1)
@@ -4375,15 +4386,21 @@ if current_tab_key == "예상출고량분석":
             disp_predict = disp_predict.sort_values("예상 필요수량", ascending=False)
 
         st.markdown(f"#### 📦 제품별 예상 출고량 및 재고 현황 ({period_option}, {inv_option})")
+
+        # WMS 파일이 오래된 경우 경고 메시지
+        _today = pd.Timestamp.today().normalize()
+        _days_since_upload = (_today - wms_upload_date).days
+        if not inv_summary.empty and _days_since_upload >= 7:
+            st.warning(f"⚠️ WMS 재고 파일이 **{_days_since_upload}일 전** 기준입니다. 예상 소진일은 업로드 시점({wms_upload_date.strftime('%Y-%m-%d')}) 기준으로 산정되므로, 최신 재고 파일을 업로드하면 더 정확한 결과를 확인할 수 있습니다.")
         
         with st.expander("📝 테이블 컬럼 상세 설명", expanded=False):
             st.markdown("""
             - **일평균 출고량**: 선택한 분석기간 동안의 하루 평균 출고 수량입니다.
             - **예상 필요수량**: 일평균 출고량 × 목표 재고 기간(일반 2개월, 성수기 3개월)으로 계산된 적정 유지 수량입니다.
-            - **업로드 시점 재고**: 우측 데이터 관리에서 마지막으로 업로드한 WMS 재고 파일 기준의 수량입니다.
+            - **업로드 시점 재고**: 우측 데이터 관리에서 마지막으로 업로드한 WMS 재고 파일 기준의 수량입니다. 실시간 재고가 아니며, 업로드한 시점의 스냅샷입니다.
             - **부족/초과 수량**: `업로드 시점 재고` - `예상 필요수량` 으로, 마이너스(-)일 경우 재고가 부족함을 의미합니다.
-            - **재고 상태**: `부족` (현재고 < 예상 필요수량), `과잉` (현재고가 예상 필요수량의 2배 초과), `정상` (그 외)
-            - **예상 소진일**: 현재 재고가 모두 소진될 것으로 예상되는 날짜입니다. (현재고 ÷ 일평균 출고량)
+            - **재고 상태**: `부족` (업로드 시점 재고 < 예상 필요수량), `과잉` (업로드 시점 재고가 예상 필요수량의 2배 초과), `정상` (그 외)
+            - **예상 소진일**: WMS 업로드 시점의 재고가 모두 소진될 것으로 예상되는 날짜입니다. (업로드 시점 재고 ÷ 일평균 출고량, **WMS 파일 업로드일 기준**으로 산정)
             - **리드타임(일) & MOQ**: 발주 시 참고할 상품 마스터 정보입니다. (입고 소요일 및 최소주문수량)
             """)
 
