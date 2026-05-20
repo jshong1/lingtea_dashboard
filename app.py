@@ -992,8 +992,11 @@ def save_inventory_status(df, user_email):
 def parse_wms_stock_file(uploaded_file):
     """WMS 엑셀 파일을 파싱하여 표준화된 DataFrame으로 반환합니다."""
     try:
-        # WMS .xls 파일은 보통 2행부터 헤더가 있음
-        df = pd.read_excel(uploaded_file, engine='xlrd', header=1)
+        # 파일 확장자에 따라 엔진 자동 선택
+        fname = getattr(uploaded_file, "name", "")
+        engine = "xlrd" if fname.lower().endswith(".xls") else "openpyxl"
+        # WMS 파일은 보통 2행부터 헤더가 있음
+        df = pd.read_excel(uploaded_file, engine=engine, header=1)
         
         # 필수 컬럼 확인 (WMS 양식: 물류센터, 상품코드, 상품명, 가용재고)
         required_cols = ["물류센터", "상품코드", "상품명", "가용재고"]
