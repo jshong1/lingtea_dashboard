@@ -3898,7 +3898,7 @@ if current_tab_key == "공헌이익분석(통합)":
             _logistics_rows = []
             for dept in _depts_all:
                 row = {"부서": dept}
-                for m in all_months:
+                for m in selected_months:  # all_months 대신 selected_months 적용
                     row[m] = _lt.get((dept, m), 0)
                 _logistics_rows.append(row)
             _logistics_display = pd.DataFrame(_logistics_rows).set_index("부서")
@@ -3912,7 +3912,7 @@ if current_tab_key == "공헌이익분석(통합)":
         item_groups_ad = sorted(set(k[0] for k in st.session_state["ad_cost_monthly"].keys()))
         for ig in item_groups_ad:
             row = {"품목군": ig}
-            for m in all_months:
+            for m in selected_months:  # all_months 대신 selected_months 적용
                 row[m] = st.session_state["ad_cost_monthly"].get((ig, m), 0)
             ad_data.append(row)
         ad_df = pd.DataFrame(ad_data)
