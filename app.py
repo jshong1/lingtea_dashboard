@@ -3011,6 +3011,7 @@ if current_tab_key == "채널분석":
             display_map = {item["source"]: item.get("display", item["source"]) for item in sorted_items}
             data_part.index = [display_map.get(idx, idx) for idx in data_part.index]
 
+
             include_total_row = selected_preset.get("include_total_row", True)
             if include_total_row and total_row is not None:
                 ch_sales_pivot = pd.concat([total_row, data_part])
@@ -3446,8 +3447,53 @@ def _render_contrib_tab(base_df, market_filter, tab_label, ad_apply):
         st.info("해당 조건에 데이터가 없습니다.")
         return
 
-    # ── 비용 재계산 제거 (이미 상단에서 계산됨) ──
-    # mdf["물류비"], mdf["광고비"] 컬럼은 이미 pre-calculated 상태임
+    # ── 물류비 직접 재계산 (통합 탭과 동일 방식, st.session_state 기반) ──
+    # 분모: base_df (국내+해외 합산) 기준 담당부서별 월별 매출
+    mdf["물류비"] = 0.0
+    for _m in selected_months:
+        _depts_m = set(
+            dept for (dept, ym) in st.session_state["logistics_table"].keys() if ym == _m
+        )
+        for _dept in _depts_m:
+            _dept_logistics_amt = st.session_state["logistics_table"].get((_dept, _m), 0)
+            if _dept_logistics_amt <= 0:
+                continue
+            # 분모: base_df 전체(국내+해외) 기준 담당부서 월별 매출
+            _dept_base_mask = (base_df["출고년월"] == _m) & (base_df["담당부서"] == _dept)
+            _dept_total_sales = base_df.loc[_dept_base_mask, "품목별매출(VAT제외)"].sum()
+            if _dept_total_sales <= 0:
+                continue
+            # mdf(시장 필터된 데이터)에서 해당 부서 행에 배분
+            _dept_mdf_mask = (mdf["출고년월"] == _m) & (mdf["담당부서"] == _dept)
+            if mdf[_dept_mdf_mask].empty:
+                continue
+            _ratio = mdf.loc[_dept_mdf_mask, "품목별매출(VAT제외)"] / _dept_total_sales
+            mdf.loc[_dept_mdf_mask, "물류비"] = _ratio * _dept_logistics_amt
+
+    # ── 광고비 직접 재계산 (ad_apply=True 일 때만, 국내 채널에만 배분) ──
+    # 해외 탭(ad_apply=False)에서는 광고비 = 0 유지
+    mdf["광고비"] = 0.0
+    if ad_apply:
+        _domestic_base = base_df[base_df["국내여부"] == "국내"]
+        for _m in selected_months:
+            _igs_m = set(
+                ig for (ig, ym) in st.session_state["ad_cost_monthly"].keys() if ym == _m
+            )
+            for _ig in _igs_m:
+                _ad_amt = st.session_state["ad_cost_monthly"].get((_ig, _m), 0)
+                if _ad_amt <= 0:
+                    continue
+                # 분모: base_df 국내 기준 품목군별 월별 매출
+                _ig_base_mask = (_domestic_base["출고년월"] == _m) & (_domestic_base["품목군"] == _ig)
+                _ig_total_sales = _domestic_base.loc[_ig_base_mask, "품목별매출(VAT제외)"].sum()
+                if _ig_total_sales <= 0:
+                    continue
+                # mdf에서 해당 품목군 행에 배분
+                _ig_mdf_mask = (mdf["출고년월"] == _m) & (mdf["품목군"] == _ig)
+                if mdf[_ig_mdf_mask].empty:
+                    continue
+                _ratio = mdf.loc[_ig_mdf_mask, "품목별매출(VAT제외)"] / _ig_total_sales
+                mdf.loc[_ig_mdf_mask, "광고비"] = _ratio * _ad_amt
 
     mdf["공헌이익"] = (
         mdf["품목별매출(VAT제외)"]
