@@ -2,7 +2,8 @@ import io
 import os
 import uuid
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import gspread
 import numpy as np
@@ -75,9 +76,15 @@ def build_common_ai_context(fdf):
 # -----------------------------------
 st.set_page_config(page_title="Lingtea Dashboard", layout="wide")
 
+# 한국 표준시(KST) 설정
+KST = ZoneInfo("Asia/Seoul")
+def now_kst():
+    """현재 시각을 한국 표준시(KST)로 반환"""
+    return datetime.now(KST)
+
 SHEET_ID = "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
 
-ALL_TABS = ["대시보드요약", "월별추이", "주차별추이", "채널분석", "제품분석", "YoY분석", "공헌이익분석(통합)", "공헌이익분석(국내)", "공헌이익분석(해외)", "제품별원가", "확정비교", "예상출고량분석", "AI분석", "다운로드"]
+ALL_TABS = ["대시보드요약", "월별추이", "주차별추이", "채널분석", "제품분석", "YoY분석", "공헌이익분석(통합)", "공헌이익분석(국내)", "공헌이익분석(해외)", "제품별원가", "확정비교", "예상출고량분석", "AI분석", "다운로드", "부서별활용현황"]
 
 DEFAULT_USER_TABS = {t: False for t in ALL_TABS}
 DEFAULT_ADMIN_TABS = {t: True for t in ALL_TABS}
@@ -97,6 +104,7 @@ tab_defs = {
     "예상출고량분석":   "🔮 예상 출고량 분석",
     "AI분석":           "✨ AI 분석",
     "다운로드":         "📥 다운로드",
+    "부서별활용현황":   "👥 부서별 활용 현황",
 }
 
 def tab_allowed(tab_name: str) -> bool:
@@ -452,7 +460,7 @@ def create_or_update_user(uid: str, email: str, role: str, tabs: dict):
         "email": email,
         "role": role,
         "tabs": tabs,
-        "updated_at": datetime.now().isoformat()
+        "updated_at": now_kst().isoformat()
     }, merge=True)
 
 def get_all_users():
@@ -462,13 +470,13 @@ def get_all_users():
 def update_user_tabs(uid: str, tabs: dict):
     db.collection("users").document(uid).update({
         "tabs": tabs,
-        "updated_at": datetime.now().isoformat()
+        "updated_at": now_kst().isoformat()
     })
 
 def update_user_role(uid: str, role: str):
     db.collection("users").document(uid).update({
         "role": role,
-        "updated_at": datetime.now().isoformat()
+        "updated_at": now_kst().isoformat()
     })
 
 def disable_user(uid: str):
@@ -476,7 +484,7 @@ def disable_user(uid: str):
     firebase_auth.update_user(uid, disabled=True)
     db.collection("users").document(uid).update({
         "disabled": True,
-        "updated_at": datetime.now().isoformat()
+        "updated_at": now_kst().isoformat()
     })
 
 def delete_user(uid: str):
@@ -492,10 +500,10 @@ SESSION_TTL_DAYS = 30
 def create_session(uid: str) -> str:
     """랜덤 세션 토큰 생성 → Firestore sessions 컬렉션에 저장"""
     token = str(uuid.uuid4())
-    expires_at = datetime.now() + timedelta(days=SESSION_TTL_DAYS)
+    expires_at = now_kst() + timedelta(days=SESSION_TTL_DAYS)
     db.collection("sessions").document(token).set({
         "uid": uid,
-        "created_at": datetime.now().isoformat(),
+        "created_at": now_kst().isoformat(),
         "expires_at": expires_at.isoformat(),
     })
     return token
@@ -510,7 +518,7 @@ def get_session(token: str):
             return None
         data = doc.to_dict()
         expires_at = datetime.fromisoformat(data["expires_at"])
-        if datetime.now() > expires_at:
+        if now_kst().replace(tzinfo=None) > expires_at:
             db.collection("sessions").document(token).delete()
             return None
         return data
@@ -554,7 +562,7 @@ def save_channel_preset(uid: str, preset_name: str, items: list, preset_id: str 
             "items": items,
             "exclude_unlisted": exclude_unlisted,
             "include_total_row": include_total_row,
-            "updated_at": datetime.now().isoformat()
+            "updated_at": now_kst().isoformat()
         }
         if preset_id:
             presets_ref.document(preset_id).set(data, merge=True)
@@ -786,10 +794,11 @@ with st.sidebar:
         cookies["session_token"] = ""
         cookies.save()
         for k in ["logged_in", "uid", "email", "role", "id_token", "tabs_perm",
-                  "logistics_table", "ad_cost_monthly", "channel_cost", "channel_dept_map"]:
+                  "logistics_table", "ad_cost_monthly", "channel_cost", "channel_dept_map", "login_logged", "last_page_logged"]:
             st.session_state.pop(k, None)
         st.rerun()
 
+    st.markdown("<br><br>", unsafe_allow_html=True)
 # -----------------------------------
 # 공통 유틸
 # -----------------------------------
@@ -979,7 +988,7 @@ def save_inventory_status(df, user_email):
             pass
             
         # 2. 신규 데이터 삽입
-        df["updated_at"] = datetime.now()
+        df["updated_at"] = now_kst()
         df["updated_by"] = user_email
         df.to_sql("inventory_status", conn.engine, if_exists="append", index=False)
         
@@ -1197,6 +1206,71 @@ def load_auth_master():
         auth_df[item_group_col] = auth_df[item_group_col].astype(str).str.strip()
 
     return auth_df, email_col, dept_col, role_type_col, item_group_col
+
+# -----------------------------------
+# 부서별 대시보드 활용 현황 기능
+# -----------------------------------
+def get_user_department(email: str) -> str:
+    if not email: return ""
+    _auth_df, _email_col, _dept_col, _, _ = load_auth_master()
+    if _auth_df is not None and not _auth_df.empty and _email_col and _dept_col:
+        row = _auth_df[_auth_df[_email_col] == email.lower()]
+        if not row.empty:
+            return str(row.iloc[0][_dept_col]).strip()
+    return ""
+
+def init_usage_logs_table():
+    try:
+        from sqlalchemy import text
+        DB_URL = st.secrets.get("DB_URL")
+        if not DB_URL: return
+        conn = st.connection("postgresql", type="sql", url=DB_URL)
+        with conn.session as s:
+            s.execute(text("""
+            CREATE TABLE IF NOT EXISTS usage_logs (
+              id BIGSERIAL PRIMARY KEY,
+              created_at TIMESTAMPTZ DEFAULT NOW(),
+              email TEXT,
+              department TEXT,
+              action TEXT,
+              page TEXT,
+              session_id TEXT
+            );
+            """))
+            s.commit()
+    except Exception as e:
+        print(f"Usage logs table init error: {e}")
+
+def write_usage_log(email: str, department: str, action: str, page: str = None):
+    try:
+        from sqlalchemy import text
+        DB_URL = st.secrets.get("DB_URL")
+        if not DB_URL: return
+        session_id = st.session_state.get("id_token", "")
+        conn = st.connection("postgresql", type="sql", url=DB_URL)
+        with conn.session as s:
+            s.execute(text("""
+                INSERT INTO usage_logs (email, department, action, page, session_id)
+                VALUES (:email, :dept, :action, :page, :session_id)
+            """), {
+                "email": email, "dept": department, "action": action,
+                "page": page, "session_id": session_id
+            })
+            s.commit()
+    except Exception as e:
+        print(f"Usage log insert error: {e}")
+
+def log_login_once(email: str):
+    if not st.session_state.get("login_logged", False):
+        dept = get_user_department(email)
+        write_usage_log(email, dept, "log_in")
+        st.session_state["login_logged"] = True
+
+def log_page_view_once(email: str, page: str):
+    if st.session_state.get("last_page_logged") != page:
+        dept = get_user_department(email)
+        write_usage_log(email, dept, "page_view", page=page)
+        st.session_state["last_page_logged"] = page
 
 @st.cache_data(ttl=600)
 def build_dataset(months=36):
@@ -1515,6 +1589,10 @@ if "channel_dept_map" not in st.session_state:
 # -----------------------------------
 # 메인 화면 레이아웃 시작
 # -----------------------------------
+
+init_usage_logs_table()
+log_login_once(st.session_state.get("email", ""))
+
 st.markdown(DASHBOARD_CSS, unsafe_allow_html=True)
 
 
@@ -1870,6 +1948,10 @@ reverse_tab_defs = {v: k for k, v in tab_defs.items()}
 current_tab_key = reverse_tab_defs.get(selected_menu_label)
 if not current_tab_key and "관리자" in selected_menu_label:
     current_tab_key = "admin_setting"
+
+# [신규] 페이지 뷰 로그 기록
+if current_tab_key:
+    log_page_view_once(st.session_state.get("email", ""), current_tab_key)
 
 # ===================================
 # TAB 0: 대시보드 요약 (admin only)
@@ -3294,9 +3376,9 @@ if current_tab_key == "YoY분석":
         st.info("비교하고 싶은 현재 기간을 선택하면, 자동으로 1년 전 동일 기간과 비교합니다.")
         d_col1, d_col2 = st.columns(2)
         with d_col1:
-            start_d = st.date_input("시작일", datetime.now() - timedelta(days=30))
+            start_d = st.date_input("시작일", now_kst() - timedelta(days=30))
         with d_col2:
-            end_d = st.date_input("종료일", datetime.now())
+            end_d = st.date_input("종료일", now_kst())
             
         base_start = start_d - relativedelta(years=1)
         base_end = end_d - relativedelta(years=1)
@@ -5087,7 +5169,7 @@ if current_tab_key == "admin_setting":
                         firebase_auth.update_user(uid, disabled=False)
                         db.collection("users").document(uid).update({
                             "disabled": False,
-                            "updated_at": datetime.now().isoformat()
+                            "updated_at": now_kst().isoformat()
                         })
                         st.success(f"{email} 계정이 활성화되었습니다.")
                     else:
@@ -5189,6 +5271,98 @@ if current_tab_key == "제품별원가":
                     height=500
                 )
     st.markdown('</div>', unsafe_allow_html=True)
+
+def render_usage_admin_page():
+    st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
+    st.subheader("👥 부서별 활용 현황")
+    st.caption("최근 부서별 대시보드 접속 현황 및 주요 이용 메뉴를 확인할 수 있습니다.")
+    
+    # 기간 선택 필터
+    period = st.radio(
+        "조회 기간", 
+        ["최근 7일", "최근 30일", "최근 90일", "전체"], 
+        horizontal=True,
+        index=1
+    )
+    
+    try:
+        from sqlalchemy import text
+        DB_URL = st.secrets.get("DB_URL")
+        if not DB_URL:
+            st.warning("데이터베이스가 연결되어 있지 않습니다.")
+            return
+            
+        conn = st.connection("postgresql", type="sql", url=DB_URL)
+        
+        # 기간 조건 설정
+        where_clause = ""
+        if period == "최근 7일":
+            where_clause = "WHERE created_at >= NOW() - INTERVAL '7 days'"
+        elif period == "최근 30일":
+            where_clause = "WHERE created_at >= NOW() - INTERVAL '30 days'"
+        elif period == "최근 90일":
+            where_clause = "WHERE created_at >= NOW() - INTERVAL '90 days'"
+            
+        query = f'SELECT * FROM usage_logs {where_clause}'
+        df = conn.query(query, ttl=0)
+        
+        if df.empty:
+            st.info("해당 기간의 접속 기록이 없습니다.")
+            return
+            
+        # 데이터가 있으면 집계 시작
+        # 접속 수 (action = 'log_in')
+        login_df = df[df["action"] == "log_in"]
+        login_counts = login_df.groupby("department").size().reset_index(name="접속 수")
+        
+        # 주요 사용 메뉴 (action = 'page_view')
+        pv_df = df[(df["action"] == "page_view") & (df["page"].notna())]
+        top_pages = pv_df.groupby(["department", "page"]).size().reset_index(name="count")
+        top_pages = top_pages.sort_values(["department", "count"], ascending=[True, False])
+        top_pages = top_pages.drop_duplicates(subset=["department"], keep="first")
+        top_pages = top_pages.rename(columns={"page": "주요 사용 메뉴"})[["department", "주요 사용 메뉴"]]
+        
+        # 마지막 접속일시 (created_at의 최대값) — KST 변환
+        last_acc = df.groupby("department")["created_at"].max().reset_index(name="마지막 접속일시")
+        # DB(UTC) → KST 변환 후 포맷팅
+        last_acc["마지막 접속일시"] = pd.to_datetime(last_acc["마지막 접속일시"], utc=True).dt.tz_convert("Asia/Seoul").dt.strftime('%Y-%m-%d %H:%M')
+        
+        # 전체 부서 목록 (로그인 또는 페이지 뷰 기록이 있는 부서 전체)
+        depts = pd.DataFrame({"department": df["department"].dropna().unique()})
+        # 빈 부서명은 제외 ("" 또는 "None")
+        depts = depts[depts["department"].str.strip() != ""]
+        depts = depts[depts["department"] != "None"]
+        
+        # Merge
+        result = depts.merge(login_counts, on="department", how="left")
+        result = result.merge(top_pages, on="department", how="left")
+        result = result.merge(last_acc, on="department", how="left")
+        
+        # 결측치 처리 및 컬럼 이름 변경
+        result["접속 수"] = result["접속 수"].fillna(0).astype(int)
+        result["주요 사용 메뉴"] = result["주요 사용 메뉴"].fillna("-")
+        result = result.rename(columns={"department": "부서"})
+        
+        # 접속 수 기준 내림차순 정렬
+        result = result.sort_values("접속 수", ascending=False).reset_index(drop=True)
+        
+        st.dataframe(
+            result,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "부서": st.column_config.TextColumn("부서"),
+                "접속 수": st.column_config.NumberColumn("접속 수", format="%d"),
+                "주요 사용 메뉴": st.column_config.TextColumn("주요 사용 메뉴"),
+                "마지막 접속일시": st.column_config.DatetimeColumn("마지막 접속일시", format="YYYY-MM-DD HH:mm")
+            }
+        )
+        
+    except Exception as e:
+        st.warning(f"활용 현황 데이터를 불러오는 중 오류가 발생했습니다: {e}")
+
+if current_tab_key == "부서별활용현황":
+    render_usage_admin_page()
 
 # ===================================
 # GLOBAL SIDEBAR AI (현재 화면 동기화)
