@@ -1449,6 +1449,10 @@ with st.sidebar:
         st.code(traceback.format_exc())   # 정확한 줄번호/원인 화면 출력
         st.stop()
 
+    if df.empty:
+        st.warning(f"⚠️ 귀하의 권한({st.session_state.get('user_dept', '')})에 해당하는 매출/출고 데이터가 없습니다. 관리자에게 문의하여 담당부서 권한 또는 해당 부서의 실적 데이터가 있는지 확인해 주세요.")
+        st.stop()
+
     client = get_gspread_client()
     sh     = client.open_by_key(SHEET_ID)
 
@@ -1709,6 +1713,9 @@ with st.container():
     with f_col1:
         _available_years = sorted(df["연도"].unique().tolist(), reverse=True)
         _selected_year = st.selectbox("📅 분석 연도", options=_available_years, index=0, key=f"selected_year_{st.session_state['reset_count']}")
+        if _selected_year is None:
+            st.warning("⚠️ 선택 가능한 분석 연도가 없습니다.")
+            st.stop()
 
     # 선택된 연도의 데이터 범위 계산
     df_year = df[df["연도"] == _selected_year]
