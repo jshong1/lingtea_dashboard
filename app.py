@@ -811,7 +811,7 @@ def get_gspread_client_rw():
     )
     return gspread.authorize(creds)
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=1800)
 def load_cost_input(sh_id):
     """COST_INPUT 시트 로드.
     (sh_id를 인자로 받아 내부에서 client 생성 - 캐시 효율성 위해)
@@ -877,7 +877,7 @@ def load_cost_input(sh_id):
     return logistics_dict, ad_dict
 
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=1800)
 def load_channel_cost(sh_id):
     """CHANNEL_COST 시트 로드."""
     client = get_gspread_client()
@@ -1072,7 +1072,7 @@ def load_fin_view_table(months=36):
         st.error(f"확정 데이터(fin_view_table) 로드 중 오류: {e}")
         return pd.DataFrame()
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=1800)
 def load_cost_master():
     client = get_gspread_client()
     ws     = client.open_by_key(SHEET_ID).worksheet("COST_MASTER")
@@ -1090,7 +1090,7 @@ def load_cost_master():
             result[(ym, name)] = 0
     return result
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=1800)
 def load_master():
     client = get_gspread_client()
     item_ws  = client.open_by_key(SHEET_ID).worksheet("ITEM_MASTER")
@@ -1117,7 +1117,7 @@ def load_master():
 # [수정] AUTH_MASTER 컬럼 구조 확장: 권한유형(C) / 품목군(D) 신규 탐색
 # 반환값: (auth_df, email_col, dept_col, role_type_col, item_group_col) 5-tuple
 # [수정] ttl=60 짧은 캐시 적용 — 429 Quota 초과 방지 (저장 후 .clear() 호출)
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=1800)
 def load_kpi_target():
     """KPI_TARGET 시트에서 연도별 목표매출액 로드. 시트 없으면 빈 dict 반환."""
     try:
@@ -1161,7 +1161,7 @@ def save_kpi_target(year: int, target: float):
     ws.update(f"A{next_row}:B{next_row}", [[year, target]])
     load_kpi_target.clear()
 
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=1800)
 def load_auth_master():
     """AUTH_MASTER 시트 로드. 캐시 없음 (캐시 오염 방지).
     컬럼 구조: e-mail(A) | 담당부서(B) | 권한유형(C) | 품목군(D) | 비고(E)
@@ -1474,6 +1474,15 @@ with st.sidebar:
         key="main_menu"
     )
     st.divider()
+
+    # ── [신규] 수동 캐시 새로고침 버튼 ──
+    if st.button("🔄 데이터 & 권한 새로고침", use_container_width=True, key="btn_clear_cache"):
+        with st.spinner("캐시를 초기화하고 데이터를 새로 불러옵니다..."):
+            st.cache_data.clear()
+        st.success("새로고침 완료!")
+        import time; time.sleep(0.5)
+        st.rerun()
+
 
 
 # -----------------------------------
@@ -4850,7 +4859,7 @@ if current_tab_key == "admin_setting":
         admin_emails_list = list(st.secrets["auth"]["admin_emails"])
 
         # [신규] ITEM_MASTER에서 품목군 목록 로드 (관리자 UI용)
-        @st.cache_data(ttl=600)
+        @st.cache_data(ttl=1800)
         def load_item_group_list():
             _client  = get_gspread_client()
             _ws      = _client.open_by_key(SHEET_ID).worksheet("ITEM_MASTER")
@@ -5102,7 +5111,7 @@ if current_tab_key == "제품별원가":
     st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
     st.subheader("💰 제품별 원가")
 
-    @st.cache_data(ttl=600)
+    @st.cache_data(ttl=1800)
     def load_cost_master_table():
         client = get_gspread_client()
         ws   = client.open_by_key(SHEET_ID).worksheet("COST_MASTER")
