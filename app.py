@@ -1212,11 +1212,16 @@ def load_auth_master():
 # -----------------------------------
 def get_user_department(email: str) -> str:
     if not email: return ""
+    # 세션 상태에 이미 조회된 부서 정보가 있다면 즉시 반환하여 파일/API 조회를 우회
+    if "user_dept" in st.session_state and st.session_state.get("email", "").strip().lower() == email.lower():
+        return st.session_state["user_dept"]
     _auth_df, _email_col, _dept_col, _, _ = load_auth_master()
     if _auth_df is not None and not _auth_df.empty and _email_col and _dept_col:
         row = _auth_df[_auth_df[_email_col] == email.lower()]
         if not row.empty:
-            return str(row.iloc[0][_dept_col]).strip()
+            dept = str(row.iloc[0][_dept_col]).strip()
+            st.session_state["user_dept"] = dept
+            return dept
     return ""
 
 def init_usage_logs_table():
@@ -1299,14 +1304,20 @@ def build_dataset(months=36):
     merged["연도"] = merged["출고일자"].dt.year
     merged["월"]   = merged["출고일자"].dt.month
     merged["주차"] = merged["출고일자"].dt.isocalendar().week.astype("Int64")
-    # 출고년월 유지 (기존 컬럼 덮어쓰지 않음 — 이미 load_view_table에서 생성됨)
-    def get_cost(row):
-        try:
-            prev_ym = (pd.to_datetime(row["출고년월"] + "-01") - relativedelta(months=1)).strftime("%Y-%m")
-        except:
-            return 0
-        return cost_dict.get((prev_ym, row["내품상품명"]), 0)
-    merged["제품원가"]  = merged.apply(get_cost, axis=1)
+    # [최적화] 벡터화된 날짜 연산으로 이전 달 년월 계산
+    merged["이전출고년월"] = (pd.to_datetime(merged["출고년월"] + "-01", errors="coerce") - pd.DateOffset(months=1)).dt.strftime("%Y-%m")
+    
+    # [최적화] cost_dict를 DataFrame으로 변환 후 merge하여 apply 루프 제거
+    cost_records = [{"이전출고년월": k[0], "내품상품명": k[1], "제품원가": v} for k, v in cost_dict.items()]
+    if cost_records:
+        cost_df = pd.DataFrame(cost_records)
+        merged = merged.merge(cost_df, on=["이전출고년월", "내품상품명"], how="left")
+    else:
+        merged["제품원가"] = 0.0
+    
+    merged["제품원가"] = merged["제품원가"].fillna(0.0)
+    merged = merged.drop(columns=["이전출고년월"])
+    
     merged["원가총액"]  = merged["총내품출고수량"] * merged["제품원가"]
     merged["채널수수료"] = merged["품목별매출(VAT제외)"] * merged["수수료율"]
     merged["매출총이익"]  = merged["품목별매출(VAT제외)"] - merged["원가총액"]
@@ -1328,39 +1339,61 @@ def allocate_costs(filtered_df, full_df, logistics_dict, ad_dict):
     if filtered_df.empty:
         return filtered_df
 
-    # 1. 분모(전체 매출 합계) 사전 계산
-    dept_month_sales = full_df.groupby(["출고년월", "담당부서"])["품목별매출(VAT제외)"].sum().to_dict()
-    ig_month_domestic_sales = full_df[full_df["국내여부"] == "국내"].groupby(["출고년월", "품목군"])["품목별매출(VAT제외)"].sum().to_dict()
-
-    # 2. 물류비 배분 (벡터화)
-    def calc_logistics(row):
-        key = (row["담당부서"], row["출고년월"])
-        total_sales = dept_month_sales.get(key, 0)
-        if total_sales <= 0: return 0
-        amt = logistics_dict.get(key, 0)
-        return (row["품목별매출(VAT제외)"] / total_sales) * amt
-
-    # 3. 광고비 배분 (벡터화)
-    def calc_ad(row):
-        if row["국내여부"] != "국내": return 0
-        key = (row["품목군"], row["출고년월"])
-        total_sales = ig_month_domestic_sales.get(key, 0)
-        if total_sales <= 0: return 0
-        amt = ad_dict.get(key, 0)
-        return (row["품목별매출(VAT제외)"] / total_sales) * amt
-
-    filtered_df["물류비"] = filtered_df.apply(calc_logistics, axis=1)
-    filtered_df["광고비"] = filtered_df.apply(calc_ad, axis=1)
-
-    filtered_df["공헌이익"] = (
-        filtered_df["품목별매출(VAT제외)"]
-        - filtered_df["원가총액"]
-        - filtered_df["채널수수료"]
-        - filtered_df["물류비"]
-        - filtered_df["광고비"]
+    # 1. 분모(전체 매출 합계) 사전 계산 (DataFrame)
+    dept_sales_df = (
+        full_df.groupby(["출고년월", "담당부서"])["품목별매출(VAT제외)"]
+        .sum().rename("부서월매출합계").reset_index()
     )
-    filtered_df["공헌이익률"] = safe_divide(filtered_df["공헌이익"], filtered_df["품목별매출(VAT제외)"])
-    return filtered_df
+    domestic_df = full_df[full_df["국내여부"] == "국내"]
+    ig_sales_df = (
+        domestic_df.groupby(["출고년월", "품목군"])["품목별매출(VAT제외)"]
+        .sum().rename("품목군월국내매출합계").reset_index()
+    )
+
+    # 2. 물류비/광고비 딕셔너리를 DataFrame으로 변환
+    logistics_records = [{"담당부서": k[0], "출고년월": k[1], "물류비총액": v} for k, v in logistics_dict.items()]
+    logistics_df = pd.DataFrame(logistics_records) if logistics_records else pd.DataFrame(columns=["담당부서", "출고년월", "물류비총액"])
+
+    ad_records = [{"품목군": k[0], "출고년월": k[1], "광고비총액": v} for k, v in ad_dict.items()]
+    ad_df = pd.DataFrame(ad_records) if ad_records else pd.DataFrame(columns=["품목군", "출고년월", "광고비총액"])
+
+    # 3. 데이터프레임 복사 후 관련 데이터 merge
+    res_df = filtered_df.copy()
+    res_df = res_df.merge(dept_sales_df, on=["출고년월", "담당부서"], how="left")
+    res_df = res_df.merge(logistics_df, on=["출고년월", "담당부서"], how="left")
+    res_df["부서월매출합계"] = res_df["부서월매출합계"].fillna(0.0)
+    res_df["물류비총액"] = res_df["물류비총액"].fillna(0.0)
+
+    res_df = res_df.merge(ig_sales_df, on=["출고년월", "품목군"], how="left")
+    res_df = res_df.merge(ad_df, on=["출고년월", "품목군"], how="left")
+    res_df["품목군월국내매출합계"] = res_df["품목군월국내매출합계"].fillna(0.0)
+    res_df["광고비총액"] = res_df["광고비총액"].fillna(0.0)
+
+    # 4. 벡터화 연산 적용
+    res_df["물류비"] = np.where(
+        res_df["부서월매출합계"] > 0,
+        (res_df["품목별매출(VAT제외)"] / res_df["부서월매출합계"]) * res_df["물류비총액"],
+        0.0
+    )
+
+    res_df["광고비"] = np.where(
+        (res_df["국내여부"] == "국내") & (res_df["품목군월국내매출합계"] > 0),
+        (res_df["품목별매출(VAT제외)"] / res_df["품목군월국내매출합계"]) * res_df["광고비총액"],
+        0.0
+    )
+
+    res_df["공헌이익"] = (
+        res_df["품목별매출(VAT제외)"]
+        - res_df["원가총액"]
+        - res_df["채널수수료"]
+        - res_df["물류비"]
+        - res_df["광고비"]
+    )
+    res_df["공헌이익률"] = safe_divide(res_df["공헌이익"], res_df["품목별매출(VAT제외)"])
+    
+    # 5. 임시 조인 컬럼 drop
+    res_df = res_df.drop(columns=["부서월매출합계", "물류비총액", "품목군월국내매출합계", "광고비총액"])
+    return res_df
 
 @st.cache_data(ttl=600)
 def get_processed_dataset(months=36):
