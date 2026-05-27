@@ -518,6 +518,8 @@ def get_session(token: str):
             return None
         data = doc.to_dict()
         expires_at = datetime.fromisoformat(data["expires_at"])
+        if expires_at.tzinfo is not None:
+            expires_at = expires_at.astimezone(KST).replace(tzinfo=None)
         if now_kst().replace(tzinfo=None) > expires_at:
             db.collection("sessions").document(token).delete()
             return None
