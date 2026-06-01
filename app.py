@@ -449,6 +449,18 @@ def firebase_sign_up(email: str, password: str):
     return resp.json()
 
 # -----------------------------------
+# Firebase Auth REST API (비밀번호 재설정 이메일 발송)
+# -----------------------------------
+def firebase_send_password_reset_email(email: str):
+    api_key = st.secrets["firebase_web"]["api_key"]
+    url = f"https://identitytoolkit.googleapis.com/v1/accounts:sendOobCode?key={api_key}"
+    resp = requests.post(url, json={
+        "requestType": "PASSWORD_RESET",
+        "email": email
+    }, timeout=10)
+    return resp.json()
+
+# -----------------------------------
 # Firestore 유저 관리
 # -----------------------------------
 def get_user_doc(uid: str):
@@ -657,13 +669,29 @@ def handle_signup(email: str, password: str, password_confirm: str):
     return True, "ok"
 
 # -----------------------------------
+# 비밀번호 재설정 처리
+# -----------------------------------
+def handle_password_reset(email: str):
+    allowed_domain = st.secrets["auth"].get("allowed_domain", "lingtea.co.kr")
+    if not email.endswith(f"@{allowed_domain}"):
+        return False, f"@{allowed_domain} 이메일 주소만 비밀번호를 재설정할 수 있습니다."
+
+    result = firebase_send_password_reset_email(email)
+    if "error" in result:
+        msg = result["error"].get("message", "RESET_FAILED")
+        if "EMAIL_NOT_FOUND" in msg:
+            return False, "등록되지 않은 이메일 주소입니다."
+        return False, f"재설정 메일 발송 오류: {msg}"
+    return True, "ok"
+
+# -----------------------------------
 # 로그인 / 회원가입 화면
 # -----------------------------------
 def show_login():
     st.markdown(LOGIN_CSS, unsafe_allow_html=True)
 
     if "auth_mode" not in st.session_state:
-        st.session_state["auth_mode"] = "login"  # "login" | "signup"
+        st.session_state["auth_mode"] = "login"  # "login" | "signup" | "reset_password"
 
     col1, col2, col3 = st.columns([1, 1.1, 1])
     with col2:
@@ -698,16 +726,22 @@ def show_login():
             st.markdown("""
             <div class="auth-divider">
                 <div class="auth-divider-line"></div>
-                <span class="auth-divider-text">계정이 없으신가요?</span>
+                <span class="auth-divider-text">계정 관리</span>
                 <div class="auth-divider-line"></div>
             </div>
             """, unsafe_allow_html=True)
 
-            if st.button("회원가입", use_container_width=True, key="btn_go_signup"):
-                st.session_state["auth_mode"] = "signup"
-                st.rerun()
+            col_sub1, col_sub2 = st.columns(2)
+            with col_sub1:
+                if st.button("회원가입", use_container_width=True, key="btn_go_signup"):
+                    st.session_state["auth_mode"] = "signup"
+                    st.rerun()
+            with col_sub2:
+                if st.button("비밀번호 재설정", use_container_width=True, key="btn_go_reset"):
+                    st.session_state["auth_mode"] = "reset_password"
+                    st.rerun()
 
-        else:
+        elif mode == "signup":
             # ── 회원가입 폼 ──
             st.markdown("""
             <div class="auth-notice">
@@ -742,6 +776,42 @@ def show_login():
             """, unsafe_allow_html=True)
 
             if st.button("로그인으로 돌아가기", use_container_width=True, key="btn_go_login"):
+                st.session_state["auth_mode"] = "login"
+                st.rerun()
+
+        elif mode == "reset_password":
+            # ── 비밀번호 재설정 폼 ──
+            st.markdown("""
+            <div class="auth-notice">
+                🔑 가입된 이메일 주소를 입력하시면 비밀번호 재설정 링크를 보내드립니다.
+            </div>
+            """, unsafe_allow_html=True)
+
+            email = st.text_input("이메일", placeholder="your@lingtea.co.kr", key="rp_email")
+
+            if st.button("재설정 이메일 발송", use_container_width=True, key="btn_reset_pw"):
+                if not email:
+                    st.markdown('<div class="msg-error">이메일을 입력해주세요.</div>', unsafe_allow_html=True)
+                else:
+                    with st.spinner("요청 처리 중..."):
+                        ok, msg = handle_password_reset(email)
+                    if ok:
+                        st.markdown('<div class="msg-success">✅ 비밀번호 재설정 이메일이 발송되었습니다. 이메일을 확인해주세요!</div>', unsafe_allow_html=True)
+                        import time; time.sleep(2.0)
+                        st.session_state["auth_mode"] = "login"
+                        st.rerun()
+                    else:
+                        st.markdown(f'<div class="msg-error">{msg}</div>', unsafe_allow_html=True)
+
+            st.markdown("""
+            <div class="auth-divider">
+                <div class="auth-divider-line"></div>
+                <span class="auth-divider-text">로그인 화면으로 돌아가시겠습니까?</span>
+                <div class="auth-divider-line"></div>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if st.button("로그인으로 돌아가기", use_container_width=True, key="btn_go_login_from_reset"):
                 st.session_state["auth_mode"] = "login"
                 st.rerun()
 
