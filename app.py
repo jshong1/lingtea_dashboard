@@ -4006,12 +4006,7 @@ if current_tab_key == "목표달성현황":
             actual_channel = actual_target_df.groupby("거래처분류")["품목별매출(VAT제외)"].sum().reset_index()
             actual_channel.rename(columns={"거래처분류": "채널", "품목별매출(VAT제외)": "실적금액"}, inplace=True)
             
-            with open("c:/Users/David(홍진수)/Desktop/web_lingtea_dashboard/merge_log.txt", "w", encoding="utf-8") as f:
-                f.write("=== TARGET CHANNELS ===\n")
-                f.write(target_channel.to_string())
-                f.write("\n=== ACTUAL CHANNELS ===\n")
-                f.write(actual_channel.to_string())
-                
+
             merged_channel = pd.merge(target_channel, actual_channel, on="채널", how="outer").fillna(0)
             merged_channel["구분(ON/OFF)"] = merged_channel["구분(ON/OFF)"].replace(0, "")
             merged_channel["달성률(%)"] = merged_channel.apply(lambda r: (r["실적금액"] / r["목표금액"] * 100) if r["목표금액"] > 0 else 0, axis=1)
