@@ -3986,9 +3986,6 @@ if current_tab_key == "목표달성현황":
             # 실적 데이터 복사 및 채널명 매핑 (목표값과 매칭)
             actual_target_df = filtered_df[filtered_df["출고년월"].isin(selected_months_2026)].copy()
             
-            with open("c:/Users/David(홍진수)/Desktop/web_lingtea_dashboard/channels_log.txt", "w", encoding="utf-8") as f:
-                f.write("\n".join(sorted([str(x) for x in actual_target_df["거래처분류"].unique()])))
-                
             def map_channel(ch):
                 if not isinstance(ch, str): return ch
                 if "직매입" in ch or "협력사" in ch:
