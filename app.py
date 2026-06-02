@@ -1216,11 +1216,11 @@ def load_sales_target():
             
             # A열 (제품들) 갱신
             if len(row) > 0 and str(row[0]).strip():
-                current_products = str(row[0]).strip()
+                current_products = str(row[0]).strip().replace('\n', ' ')
                 
             # 카테고리(품목군) 갱신 (B열: index 1)
             if len(row) > 1 and row[1].strip() and row[1].strip() != "TOTAL":
-                current_category = row[1].strip()
+                current_category = row[1].strip().replace('\n', ' ')
             elif len(row) > 1 and row[1].strip() == "TOTAL":
                 current_category = "TOTAL"
                 
@@ -1228,10 +1228,10 @@ def load_sales_target():
             
             # G열 (채널대분류) 갱신 (병합된 셀 대응)
             if len(row) > 6 and str(row[6]).strip():
-                current_channel_main = str(row[6]).strip()
+                current_channel_main = str(row[6]).strip().replace('\n', ' ')
             channel_main = current_channel_main
             
-            channel = str(row[7]).strip()
+            channel = str(row[7]).strip().replace('\n', ' ')
             
             if not channel: continue
             
@@ -3983,14 +3983,38 @@ if current_tab_key == "목표달성현황":
             target_month_cols = sorted(user_selected_months, key=lambda x: int(x.replace("월", "")))
             selected_months_2026 = [f"2026-{int(m.replace('월', '')):02d}" for m in target_month_cols]
             
+            # 실적 데이터 복사 및 채널명 매핑 (목표값과 매칭)
+            actual_target_df = filtered_df[filtered_df["출고년월"].isin(selected_months_2026)].copy()
+            
+            with open("c:/Users/David(홍진수)/Desktop/web_lingtea_dashboard/channels_log.txt", "w", encoding="utf-8") as f:
+                f.write("\n".join(sorted([str(x) for x in actual_target_df["거래처분류"].unique()])))
+                
+            def map_channel(ch):
+                if not isinstance(ch, str): return ch
+                if "직매입" in ch or "협력사" in ch:
+                    return "직매입 협력사"
+                if "홈쇼핑" in ch or "오픈마켓" in ch:
+                    return "홈쇼핑 오픈마켓"
+                if "카카오" in ch and ("쇼핑" in ch or "선물" in ch):
+                    return "카카오 쇼핑하기 카카오 선물하기"
+                return ch.strip()
+                
+            actual_target_df["거래처분류"] = actual_target_df["거래처분류"].apply(map_channel)
+            
             # --- 1. 선택 기간 합산 데이터 준비 ---
             # 1-1. 채널별 목표 합산
             target_channel = target_df.groupby(["채널대분류", "채널"])[target_month_cols].sum().sum(axis=1).reset_index()
             target_channel.rename(columns={0: "목표금액", "채널대분류": "구분(ON/OFF)"}, inplace=True)
             
-            actual_channel = filtered_df[filtered_df["출고년월"].isin(selected_months_2026)].groupby("거래처분류")["품목별매출(VAT제외)"].sum().reset_index()
+            actual_channel = actual_target_df.groupby("거래처분류")["품목별매출(VAT제외)"].sum().reset_index()
             actual_channel.rename(columns={"거래처분류": "채널", "품목별매출(VAT제외)": "실적금액"}, inplace=True)
             
+            with open("c:/Users/David(홍진수)/Desktop/web_lingtea_dashboard/merge_log.txt", "w", encoding="utf-8") as f:
+                f.write("=== TARGET CHANNELS ===\n")
+                f.write(target_channel.to_string())
+                f.write("\n=== ACTUAL CHANNELS ===\n")
+                f.write(actual_channel.to_string())
+                
             merged_channel = pd.merge(target_channel, actual_channel, on="채널", how="outer").fillna(0)
             merged_channel["구분(ON/OFF)"] = merged_channel["구분(ON/OFF)"].replace(0, "")
             merged_channel["달성률(%)"] = merged_channel.apply(lambda r: (r["실적금액"] / r["목표금액"] * 100) if r["목표금액"] > 0 else 0, axis=1)
@@ -4003,7 +4027,7 @@ if current_tab_key == "목표달성현황":
             target_item = target_df.groupby(["제품들", "품목군"])[target_month_cols].sum().sum(axis=1).reset_index()
             target_item.rename(columns={0: "목표금액"}, inplace=True)
             
-            actual_item = filtered_df[filtered_df["출고년월"].isin(selected_months_2026)].groupby("품목군")["품목별매출(VAT제외)"].sum().reset_index()
+            actual_item = actual_target_df.groupby("품목군")["품목별매출(VAT제외)"].sum().reset_index()
             actual_item.rename(columns={"품목별매출(VAT제외)": "실적금액"}, inplace=True)
             
             merged_item = pd.merge(target_item, actual_item, on="품목군", how="outer").fillna(0)
@@ -4018,7 +4042,7 @@ if current_tab_key == "목표달성현황":
             # --- 2. 월별 세부 데이터 준비 (Melt) ---
             target_melt = target_df.melt(id_vars=["제품들", "품목군", "채널대분류", "채널"], value_vars=target_month_cols, var_name="월", value_name="목표금액")
             
-            actual_mo = filtered_df[filtered_df["출고년월"].isin(selected_months_2026)].copy()
+            actual_mo = actual_target_df.copy()
             actual_mo["월"] = actual_mo["출고년월"].apply(lambda x: f"{int(x.split('-')[1])}월")
             
             # 2-1. 월별 전체 합산
@@ -4053,39 +4077,33 @@ if current_tab_key == "목표달성현황":
             
             with t1:
                 st.markdown("#### 선택 기간 누적 채널별 달성률")
-                col1, col2 = st.columns([1, 1.5])
-                with col1:
-                    st.dataframe(merged_channel.style.format({
-                        "목표금액": "{:,.0f}", "실적금액": "{:,.0f}", "부족금액": "{:,.0f}", "달성률(%)": "{:.1f}%"
-                    }), use_container_width=True)
-                with col2:
-                    fig_ch = px.bar(merged_channel.head(15), x="채널", y=["목표금액", "실적금액"], barmode="group", title="상위 15개 채널 목표 vs 실적")
-                    fig_ch.update_layout(yaxis_title="금액 (원)", legend_title="구분")
-                    st.plotly_chart(fig_ch, use_container_width=True)
+                st.dataframe(merged_channel.style.format({
+                    "목표금액": "{:,.0f}", "실적금액": "{:,.0f}", "부족금액": "{:,.0f}", "달성률(%)": "{:.1f}%"
+                }), use_container_width=True)
+                
+                fig_ch = px.bar(merged_channel.head(15), x="채널", y=["목표금액", "실적금액"], barmode="group", title="상위 15개 채널 목표 vs 실적")
+                fig_ch.update_layout(yaxis_title="금액 (원)", legend_title="구분")
+                st.plotly_chart(fig_ch, use_container_width=True)
             
             with t2:
                 st.markdown("#### 선택 기간 누적 품목군별 달성률")
-                col1, col2 = st.columns([1, 1.5])
-                with col1:
-                    st.dataframe(merged_item.style.format({
-                        "목표금액": "{:,.0f}", "실적금액": "{:,.0f}", "부족금액": "{:,.0f}", "달성률(%)": "{:.1f}%"
-                    }), use_container_width=True)
-                with col2:
-                    fig_it = px.bar(merged_item.head(15), x="품목군", y=["목표금액", "실적금액"], barmode="group", title="상위 15개 품목군 목표 vs 실적")
-                    fig_it.update_layout(yaxis_title="금액 (원)", legend_title="구분")
-                    st.plotly_chart(fig_it, use_container_width=True)
+                st.dataframe(merged_item.style.format({
+                    "목표금액": "{:,.0f}", "실적금액": "{:,.0f}", "부족금액": "{:,.0f}", "달성률(%)": "{:.1f}%"
+                }), use_container_width=True)
+                
+                fig_it = px.bar(merged_item.head(15), x="품목군", y=["목표금액", "실적금액"], barmode="group", title="상위 15개 품목군 목표 vs 실적")
+                fig_it.update_layout(yaxis_title="금액 (원)", legend_title="구분")
+                st.plotly_chart(fig_it, use_container_width=True)
                     
             with t3:
                 st.markdown("#### 월별 목표 vs 실적 요약")
-                col1, col2 = st.columns([1, 1.5])
-                with col1:
-                    st.dataframe(merged_monthly.style.format({
-                        "목표금액": "{:,.0f}", "실적금액": "{:,.0f}", "부족금액": "{:,.0f}", "달성률(%)": "{:.1f}%"
-                    }), use_container_width=True)
-                with col2:
-                    fig_mo = px.bar(merged_monthly, x="월", y=["목표금액", "실적금액"], barmode="group", title="월별 목표 vs 실적")
-                    fig_mo.update_layout(yaxis_title="금액 (원)", legend_title="구분")
-                    st.plotly_chart(fig_mo, use_container_width=True)
+                st.dataframe(merged_monthly.style.format({
+                    "목표금액": "{:,.0f}", "실적금액": "{:,.0f}", "부족금액": "{:,.0f}", "달성률(%)": "{:.1f}%"
+                }), use_container_width=True)
+                
+                fig_mo = px.bar(merged_monthly, x="월", y=["목표금액", "실적금액"], barmode="group", title="월별 목표 vs 실적")
+                fig_mo.update_layout(yaxis_title="금액 (원)", legend_title="구분")
+                st.plotly_chart(fig_mo, use_container_width=True)
 
             with t4:
                 st.markdown("#### 월별 채널별 달성률(%)")
@@ -4093,13 +4111,11 @@ if current_tab_key == "목표달성현황":
                 pivot_ch_mo = merged_ch_mo.pivot_table(index=["구분(ON/OFF)", "채널"], columns="월", values="달성률(%)", aggfunc="sum").fillna(0)
                 pivot_ch_mo = pivot_ch_mo.reindex(columns=target_month_cols)
                 
-                col1, col2 = st.columns([1.2, 1])
-                with col1:
-                    fig_ch_line = px.line(merged_ch_mo, x="월", y="달성률(%)", color="채널", markers=True, title="월별 채널 달성률 추이")
-                    fig_ch_line.update_xaxes(categoryorder='array', categoryarray=target_month_cols)
-                    st.plotly_chart(fig_ch_line, use_container_width=True)
-                with col2:
-                    st.dataframe(pivot_ch_mo.style.format("{:.1f}%"), use_container_width=True)
+                st.dataframe(pivot_ch_mo.style.format("{:.1f}%"), use_container_width=True)
+                
+                fig_ch_line = px.line(merged_ch_mo, x="월", y="달성률(%)", color="채널", markers=True, title="월별 채널 달성률 추이")
+                fig_ch_line.update_xaxes(categoryorder='array', categoryarray=target_month_cols)
+                st.plotly_chart(fig_ch_line, use_container_width=True)
 
             with t5:
                 st.markdown("#### 월별 품목군별 달성률(%)")
@@ -4110,13 +4126,11 @@ if current_tab_key == "목표달성현황":
                 pivot_it_mo = merged_it_mo.pivot_table(index=["제품들", "품목군"], columns="월", values="달성률(%)", aggfunc="sum").fillna(0)
                 pivot_it_mo = pivot_it_mo.reindex(columns=target_month_cols)
                 
-                col1, col2 = st.columns([1.2, 1])
-                with col1:
-                    fig_it_line = px.line(merged_it_mo, x="월", y="달성률(%)", color="품목군", markers=True, title="월별 품목군 달성률 추이")
-                    fig_it_line.update_xaxes(categoryorder='array', categoryarray=target_month_cols)
-                    st.plotly_chart(fig_it_line, use_container_width=True)
-                with col2:
-                    st.dataframe(pivot_it_mo.style.format("{:.1f}%"), use_container_width=True)
+                st.dataframe(pivot_it_mo.style.format("{:.1f}%"), use_container_width=True)
+                
+                fig_it_line = px.line(merged_it_mo, x="월", y="달성률(%)", color="품목군", markers=True, title="월별 품목군 달성률 추이")
+                fig_it_line.update_xaxes(categoryorder='array', categoryarray=target_month_cols)
+                st.plotly_chart(fig_it_line, use_container_width=True)
 
             with t6:
                 st.markdown("#### ⚠️ 미달성 채널 및 품목군 요약 (선택 기간 합산 기준)")
