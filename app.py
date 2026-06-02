@@ -84,7 +84,7 @@ def now_kst():
 
 SHEET_ID = "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
 
-ALL_TABS = ["대시보드요약", "월별추이", "주차별추이", "채널분석", "제품분석", "YoY분석", "공헌이익분석(통합)", "공헌이익분석(국내)", "공헌이익분석(해외)", "제품별원가", "확정비교", "예상출고량분석", "AI분석", "다운로드", "부서별활용현황"]
+ALL_TABS = ["대시보드요약", "월별추이", "주차별추이", "채널분석", "제품분석", "YoY분석", "목표달성현황", "공헌이익분석(통합)", "공헌이익분석(국내)", "공헌이익분석(해외)", "제품별원가", "확정비교", "예상출고량분석", "AI분석", "다운로드", "부서별활용현황"]
 
 DEFAULT_USER_TABS = {t: False for t in ALL_TABS}
 DEFAULT_ADMIN_TABS = {t: True for t in ALL_TABS}
@@ -96,6 +96,7 @@ tab_defs = {
     "채널분석":         "🏪 채널 분석",
     "제품분석":         "📦 제품 분석",
     "YoY분석":          "📊 YoY 분석",
+    "목표달성현황":     "🎯 목표 달성 현황",
     "공헌이익분석(국내)": "📊 공헌이익(국내)",
     "공헌이익분석(해외)": "🌏 공헌이익(해외)",
     "공헌이익분석(통합)": "📋 공헌이익(통합)",
@@ -1198,6 +1199,73 @@ def load_master():
 # [수정] AUTH_MASTER 컬럼 구조 확장: 권한유형(C) / 품목군(D) 신규 탐색
 # 반환값: (auth_df, email_col, dept_col, role_type_col, item_group_col) 5-tuple
 # [수정] ttl=60 짧은 캐시 적용 — 429 Quota 초과 방지 (저장 후 .clear() 호출)
+@st.cache_data(ttl=600)
+def load_sales_target():
+    """채널별&월별 매출 목표 (2026) 시트에서 목표치 로드"""
+    try:
+        client = get_gspread_client()
+        ws = client.open_by_key(SHEET_ID).worksheet("채널별&월별 매출 목표 (2026)")
+        data = ws.get_all_values()
+        
+        records = []
+        current_category = "TOTAL"
+        current_products = ""
+        current_channel_main = ""
+        for row in data[3:]:  # 4번째 행부터 시작
+            if not any(row): continue
+            
+            # A열 (제품들) 갱신
+            if len(row) > 0 and str(row[0]).strip():
+                current_products = str(row[0]).strip()
+                
+            # 카테고리(품목군) 갱신 (B열: index 1)
+            if len(row) > 1 and row[1].strip() and row[1].strip() != "TOTAL":
+                current_category = row[1].strip()
+            elif len(row) > 1 and row[1].strip() == "TOTAL":
+                current_category = "TOTAL"
+                
+            if len(row) < 8: continue
+            
+            # G열 (채널대분류) 갱신 (병합된 셀 대응)
+            if len(row) > 6 and str(row[6]).strip():
+                current_channel_main = str(row[6]).strip()
+            channel_main = current_channel_main
+            
+            channel = str(row[7]).strip()
+            
+            if not channel: continue
+            
+            # 월별 데이터 파싱 (K열~V열: index 10 ~ 21 -> 1월~12월)
+            targets = {}
+            for i, month in enumerate(range(1, 13)):
+                col_idx = 10 + i
+                if col_idx < len(row):
+                    val = str(row[col_idx]).replace(",", "").strip()
+                    if val == "#REF!" or val == "-" or val == "":
+                        val = 0.0
+                    else:
+                        try:
+                            val = float(val)
+                        except:
+                            val = 0.0
+                else:
+                    val = 0.0
+                targets[f"{month}월"] = val
+                
+            records.append({
+                "품목군": current_category,
+                "제품들": current_products,
+                "채널대분류": channel_main,
+                "채널": channel,
+                **targets
+            })
+            
+        df = pd.DataFrame(records)
+        return df
+    except Exception as e:
+        print(f"Error loading sales target: {e}")
+        return pd.DataFrame()
+
 @st.cache_data(ttl=1800)
 def load_kpi_target():
     """KPI_TARGET 시트에서 연도별 목표매출액 로드. 시트 없으면 빈 dict 반환."""
@@ -3858,6 +3926,216 @@ def _render_contrib_tab(base_df, market_filter, tab_label, ad_apply):
             }), use_container_width=True)
         else:
             st.info("월별 채널별 공헌이익 데이터가 없습니다.")
+
+
+if current_tab_key == "목표달성현황":
+    st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
+    st.markdown('<div class="main-header">🎯 목표 달성 현황</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-header">채널별 및 품목군별 2026년 매출 목표 대비 실적 달성률입니다. (주의: 선택된 조회 기간 중 2026년 월만 반영됩니다)</div>', unsafe_allow_html=True)
+    
+    with st.spinner("목표 데이터를 불러오는 중..."):
+        target_df = load_sales_target()
+        
+    if target_df.empty:
+        st.warning("목표 데이터를 불러오지 못했습니다. 스프레드시트를 확인해주세요.")
+    else:
+        # Extract selected months from filtered_df
+        if "출고년월" in filtered_df.columns:
+            selected_months_str = filtered_df["출고년월"].dropna().unique()
+            # Sort the months so they appear in chronological order (e.g., 2026-01, 2026-02)
+            selected_months_2026 = sorted([m for m in selected_months_str if str(m).startswith("2026-")])
+            target_month_cols = [f"{int(m.split('-')[1])}월" for m in selected_months_2026]
+        else:
+            selected_months_2026 = []
+            target_month_cols = []
+            
+        if not target_month_cols:
+            st.info("조회 기간 내에 2026년 데이터가 없어 목표 달성률을 계산할 수 없습니다.")
+        else:
+            if "target_pills" not in st.session_state:
+                st.session_state["target_pills"] = target_month_cols
+            else:
+                st.session_state["target_pills"] = [m for m in st.session_state["target_pills"] if m in target_month_cols]
+                
+            st.write("**조회 대상 월 선택**")
+            col_btn1, col_btn2, col_pills = st.columns([1.2, 1.2, 7.6])
+            with col_btn1:
+                if st.button("✅ 전체 선택", use_container_width=True):
+                    st.session_state["target_pills"] = target_month_cols
+            with col_btn2:
+                if st.button("❌ 전체 해제", use_container_width=True):
+                    st.session_state["target_pills"] = []
+                    
+            with col_pills:
+                user_selected_months = st.pills(
+                    "월 선택", 
+                    options=target_month_cols, 
+                    selection_mode="multi", 
+                    key="target_pills",
+                    label_visibility="collapsed"
+                )
+            
+            if not user_selected_months:
+                st.warning("최소 1개 이상의 월을 선택해주세요.")
+                st.stop()
+                
+            # 정렬 유지 (클릭 순서에 의해 월이 섞이는 것 방지)
+            target_month_cols = sorted(user_selected_months, key=lambda x: int(x.replace("월", "")))
+            selected_months_2026 = [f"2026-{int(m.replace('월', '')):02d}" for m in target_month_cols]
+            
+            # --- 1. 선택 기간 합산 데이터 준비 ---
+            # 1-1. 채널별 목표 합산
+            target_channel = target_df.groupby(["채널대분류", "채널"])[target_month_cols].sum().sum(axis=1).reset_index()
+            target_channel.rename(columns={0: "목표금액", "채널대분류": "구분(ON/OFF)"}, inplace=True)
+            
+            actual_channel = filtered_df[filtered_df["출고년월"].isin(selected_months_2026)].groupby("거래처분류")["품목별매출(VAT제외)"].sum().reset_index()
+            actual_channel.rename(columns={"거래처분류": "채널", "품목별매출(VAT제외)": "실적금액"}, inplace=True)
+            
+            merged_channel = pd.merge(target_channel, actual_channel, on="채널", how="outer").fillna(0)
+            merged_channel["구분(ON/OFF)"] = merged_channel["구분(ON/OFF)"].replace(0, "")
+            merged_channel["달성률(%)"] = merged_channel.apply(lambda r: (r["실적금액"] / r["목표금액"] * 100) if r["목표금액"] > 0 else 0, axis=1)
+            merged_channel["부족금액"] = (merged_channel["목표금액"] - merged_channel["실적금액"]).apply(lambda x: x if x > 0 else 0)
+            merged_channel = merged_channel[merged_channel["목표금액"] > 0]
+            merged_channel = merged_channel.sort_values("목표금액", ascending=False)
+            merged_channel = merged_channel[["구분(ON/OFF)", "채널", "목표금액", "실적금액", "부족금액", "달성률(%)"]]
+            
+            # 1-2. 품목군별 목표 합산
+            target_item = target_df.groupby(["제품들", "품목군"])[target_month_cols].sum().sum(axis=1).reset_index()
+            target_item.rename(columns={0: "목표금액"}, inplace=True)
+            
+            actual_item = filtered_df[filtered_df["출고년월"].isin(selected_months_2026)].groupby("품목군")["품목별매출(VAT제외)"].sum().reset_index()
+            actual_item.rename(columns={"품목별매출(VAT제외)": "실적금액"}, inplace=True)
+            
+            merged_item = pd.merge(target_item, actual_item, on="품목군", how="outer").fillna(0)
+            merged_item["제품들"] = merged_item["제품들"].replace(0, "")
+            merged_item["달성률(%)"] = merged_item.apply(lambda r: (r["실적금액"] / r["목표금액"] * 100) if r["목표금액"] > 0 else 0, axis=1)
+            merged_item["부족금액"] = (merged_item["목표금액"] - merged_item["실적금액"]).apply(lambda x: x if x > 0 else 0)
+            merged_item = merged_item[~merged_item["품목군"].isin(["__매출조정__", "__미분류__", "매출조정", "미분류"])]
+            merged_item = merged_item[merged_item["목표금액"] > 0]
+            merged_item = merged_item.sort_values("목표금액", ascending=False)
+            merged_item = merged_item[["제품들", "품목군", "목표금액", "실적금액", "부족금액", "달성률(%)"]]
+            
+            # --- 2. 월별 세부 데이터 준비 (Melt) ---
+            target_melt = target_df.melt(id_vars=["제품들", "품목군", "채널대분류", "채널"], value_vars=target_month_cols, var_name="월", value_name="목표금액")
+            
+            actual_mo = filtered_df[filtered_df["출고년월"].isin(selected_months_2026)].copy()
+            actual_mo["월"] = actual_mo["출고년월"].apply(lambda x: f"{int(x.split('-')[1])}월")
+            
+            # 2-1. 월별 전체 합산
+            target_monthly = target_melt.groupby("월")["목표금액"].sum().reset_index()
+            actual_monthly = actual_mo.groupby("월")["품목별매출(VAT제외)"].sum().reset_index()
+            actual_monthly.rename(columns={"품목별매출(VAT제외)": "실적금액"}, inplace=True)
+            merged_monthly = pd.merge(target_monthly, actual_monthly, on="월", how="outer").fillna(0)
+            merged_monthly["달성률(%)"] = merged_monthly.apply(lambda r: (r["실적금액"] / r["목표금액"] * 100) if r["목표금액"] > 0 else 0, axis=1)
+            merged_monthly["부족금액"] = (merged_monthly["목표금액"] - merged_monthly["실적금액"]).apply(lambda x: x if x > 0 else 0)
+            merged_monthly["월_숫자"] = merged_monthly["월"].apply(lambda x: int(x.replace("월", "")))
+            merged_monthly = merged_monthly.sort_values("월_숫자").drop(columns=["월_숫자"])
+            
+            # 2-2. 월별 x 채널별
+            actual_channel_mo = actual_mo.groupby(["거래처분류", "월"])["품목별매출(VAT제외)"].sum().reset_index()
+            actual_channel_mo.rename(columns={"거래처분류": "채널", "품목별매출(VAT제외)": "실적금액"}, inplace=True)
+            merged_ch_mo = pd.merge(target_melt.groupby(["채널대분류", "채널", "월"])["목표금액"].sum().reset_index(), actual_channel_mo, on=["채널", "월"], how="outer").fillna(0)
+            merged_ch_mo.rename(columns={"채널대분류": "구분(ON/OFF)"}, inplace=True)
+            merged_ch_mo["구분(ON/OFF)"] = merged_ch_mo["구분(ON/OFF)"].replace(0, "")
+            merged_ch_mo["달성률(%)"] = merged_ch_mo.apply(lambda r: (r["실적금액"] / r["목표금액"] * 100) if r["목표금액"] > 0 else 0, axis=1)
+            merged_ch_mo = merged_ch_mo[merged_ch_mo["채널"].isin(merged_channel["채널"].unique())]
+            
+            # 2-3. 월별 x 품목군별
+            actual_item_mo = actual_mo.groupby(["품목군", "월"])["품목별매출(VAT제외)"].sum().reset_index()
+            actual_item_mo.rename(columns={"품목별매출(VAT제외)": "실적금액"}, inplace=True)
+            merged_it_mo = pd.merge(target_melt.groupby(["제품들", "품목군", "월"])["목표금액"].sum().reset_index(), actual_item_mo, on=["품목군", "월"], how="outer").fillna(0)
+            merged_it_mo["제품들"] = merged_it_mo["제품들"].replace(0, "")
+            merged_it_mo["달성률(%)"] = merged_it_mo.apply(lambda r: (r["실적금액"] / r["목표금액"] * 100) if r["목표금액"] > 0 else 0, axis=1)
+            merged_it_mo = merged_it_mo[merged_it_mo["품목군"].isin(merged_item["품목군"].unique())]
+            
+            # --- 3. 탭 렌더링 ---
+            t1, t2, t3, t4, t5, t6 = st.tabs(["전체: 채널별", "전체: 품목군별", "월별: 전체 요약", "월별: 채널별 추이", "월별: 품목군별 추이", "⚠️ 부족금액 요약"])
+            
+            with t1:
+                st.markdown("#### 선택 기간 누적 채널별 달성률")
+                col1, col2 = st.columns([1, 1.5])
+                with col1:
+                    st.dataframe(merged_channel.style.format({
+                        "목표금액": "{:,.0f}", "실적금액": "{:,.0f}", "부족금액": "{:,.0f}", "달성률(%)": "{:.1f}%"
+                    }), use_container_width=True)
+                with col2:
+                    fig_ch = px.bar(merged_channel.head(15), x="채널", y=["목표금액", "실적금액"], barmode="group", title="상위 15개 채널 목표 vs 실적")
+                    fig_ch.update_layout(yaxis_title="금액 (원)", legend_title="구분")
+                    st.plotly_chart(fig_ch, use_container_width=True)
+            
+            with t2:
+                st.markdown("#### 선택 기간 누적 품목군별 달성률")
+                col1, col2 = st.columns([1, 1.5])
+                with col1:
+                    st.dataframe(merged_item.style.format({
+                        "목표금액": "{:,.0f}", "실적금액": "{:,.0f}", "부족금액": "{:,.0f}", "달성률(%)": "{:.1f}%"
+                    }), use_container_width=True)
+                with col2:
+                    fig_it = px.bar(merged_item.head(15), x="품목군", y=["목표금액", "실적금액"], barmode="group", title="상위 15개 품목군 목표 vs 실적")
+                    fig_it.update_layout(yaxis_title="금액 (원)", legend_title="구분")
+                    st.plotly_chart(fig_it, use_container_width=True)
+                    
+            with t3:
+                st.markdown("#### 월별 목표 vs 실적 요약")
+                col1, col2 = st.columns([1, 1.5])
+                with col1:
+                    st.dataframe(merged_monthly.style.format({
+                        "목표금액": "{:,.0f}", "실적금액": "{:,.0f}", "부족금액": "{:,.0f}", "달성률(%)": "{:.1f}%"
+                    }), use_container_width=True)
+                with col2:
+                    fig_mo = px.bar(merged_monthly, x="월", y=["목표금액", "실적금액"], barmode="group", title="월별 목표 vs 실적")
+                    fig_mo.update_layout(yaxis_title="금액 (원)", legend_title="구분")
+                    st.plotly_chart(fig_mo, use_container_width=True)
+
+            with t4:
+                st.markdown("#### 월별 채널별 달성률(%)")
+                # 피벗 테이블 생성
+                pivot_ch_mo = merged_ch_mo.pivot_table(index=["구분(ON/OFF)", "채널"], columns="월", values="달성률(%)", aggfunc="sum").fillna(0)
+                pivot_ch_mo = pivot_ch_mo.reindex(columns=target_month_cols)
+                
+                col1, col2 = st.columns([1.2, 1])
+                with col1:
+                    fig_ch_line = px.line(merged_ch_mo, x="월", y="달성률(%)", color="채널", markers=True, title="월별 채널 달성률 추이")
+                    fig_ch_line.update_xaxes(categoryorder='array', categoryarray=target_month_cols)
+                    st.plotly_chart(fig_ch_line, use_container_width=True)
+                with col2:
+                    st.dataframe(pivot_ch_mo.style.format("{:.1f}%"), use_container_width=True)
+
+            with t5:
+                st.markdown("#### 월별 품목군별 달성률(%)")
+                # 불필요한 품목군 필터링 (매출조정, 미분류)
+                merged_it_mo = merged_it_mo[~merged_it_mo["품목군"].isin(["__매출조정__", "__미분류__", "매출조정", "미분류"])]
+                
+                # 피벗 테이블 생성
+                pivot_it_mo = merged_it_mo.pivot_table(index=["제품들", "품목군"], columns="월", values="달성률(%)", aggfunc="sum").fillna(0)
+                pivot_it_mo = pivot_it_mo.reindex(columns=target_month_cols)
+                
+                col1, col2 = st.columns([1.2, 1])
+                with col1:
+                    fig_it_line = px.line(merged_it_mo, x="월", y="달성률(%)", color="품목군", markers=True, title="월별 품목군 달성률 추이")
+                    fig_it_line.update_xaxes(categoryorder='array', categoryarray=target_month_cols)
+                    st.plotly_chart(fig_it_line, use_container_width=True)
+                with col2:
+                    st.dataframe(pivot_it_mo.style.format("{:.1f}%"), use_container_width=True)
+
+            with t6:
+                st.markdown("#### ⚠️ 미달성 채널 및 품목군 요약 (선택 기간 합산 기준)")
+                shortfall_channel = merged_channel[merged_channel["부족금액"] > 0].sort_values("부족금액", ascending=False)
+                shortfall_item = merged_item[merged_item["부족금액"] > 0].sort_values("부족금액", ascending=False)
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.write("**채널별 부족금액 Top 10**")
+                    st.dataframe(shortfall_channel.head(10)[["구분(ON/OFF)", "채널", "목표금액", "실적금액", "부족금액", "달성률(%)"]].style.format({
+                        "목표금액": "{:,.0f}", "실적금액": "{:,.0f}", "부족금액": "{:,.0f}", "달성률(%)": "{:.1f}%"
+                    }), use_container_width=True)
+                with col2:
+                    st.write("**품목군별 부족금액 Top 10**")
+                    st.dataframe(shortfall_item.head(10)[["제품들", "품목군", "목표금액", "실적금액", "부족금액", "달성률(%)"]].style.format({
+                        "목표금액": "{:,.0f}", "실적금액": "{:,.0f}", "부족금액": "{:,.0f}", "달성률(%)": "{:.1f}%"
+                    }), use_container_width=True)
+                    
+    st.markdown('</div>', unsafe_allow_html=True)
 
 
 if current_tab_key == "공헌이익분석(국내)":
