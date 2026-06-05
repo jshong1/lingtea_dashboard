@@ -84,7 +84,7 @@ def now_kst():
 
 SHEET_ID = "1d_TZiPZZbETyoB61PrsXVZsP5p9qsaXFgKcEgHUC_sk"
 
-ALL_TABS = ["대시보드요약", "월별추이", "주차별추이", "채널분석", "제품분석", "YoY분석", "목표달성현황", "공헌이익분석(통합)", "공헌이익분석(국내)", "공헌이익분석(해외)", "제품별원가", "확정비교", "예상출고량분석", "AI분석", "다운로드", "부서별활용현황"]
+ALL_TABS = ["대시보드요약", "월별추이", "주차별추이", "채널분석", "제품분석", "YoY분석", "목표달성현황(국내)", "공헌이익분석(통합)", "공헌이익분석(국내)", "공헌이익분석(해외)", "제품별원가", "확정비교", "예상출고량분석", "AI분석", "다운로드", "부서별활용현황"]
 
 DEFAULT_USER_TABS = {t: False for t in ALL_TABS}
 DEFAULT_ADMIN_TABS = {t: True for t in ALL_TABS}
@@ -96,7 +96,7 @@ tab_defs = {
     "채널분석":         "🏪 채널 분석",
     "제품분석":         "📦 제품 분석",
     "YoY분석":          "📊 YoY 분석",
-    "목표달성현황":     "🎯 목표 달성 현황",
+    "목표달성현황(국내)": "🎯 목표 달성 현황(국내)",
     "공헌이익분석(국내)": "📊 공헌이익(국내)",
     "공헌이익분석(해외)": "🌏 공헌이익(해외)",
     "공헌이익분석(통합)": "📋 공헌이익(통합)",
@@ -3928,10 +3928,10 @@ def _render_contrib_tab(base_df, market_filter, tab_label, ad_apply):
             st.info("월별 채널별 공헌이익 데이터가 없습니다.")
 
 
-if current_tab_key == "목표달성현황":
+if current_tab_key == "목표달성현황(국내)":
     st.markdown('<div class="dashboard-card">', unsafe_allow_html=True)
-    st.markdown('<div class="main-header">🎯 목표 달성 현황</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-header">채널별 및 품목군별 2026년 매출 목표 대비 실적 달성률입니다. (주의: 선택된 조회 기간 중 2026년 월만 반영됩니다)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="main-header">🎯 목표 달성 현황(국내)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-header">국내 채널별 및 품목군별 2026년 매출 목표 대비 실적 달성률입니다. (주의: 선택된 조회 기간 중 2026년 월만 반영됩니다)</div>', unsafe_allow_html=True)
     
     with st.spinner("목표 데이터를 불러오는 중..."):
         target_df = load_sales_target()
@@ -3940,8 +3940,10 @@ if current_tab_key == "목표달성현황":
         st.warning("목표 데이터를 불러오지 못했습니다. 스프레드시트를 확인해주세요.")
     else:
         # Extract selected months from filtered_df
-        if "출고년월" in filtered_df.columns:
-            selected_months_str = filtered_df["출고년월"].dropna().unique()
+        local_df = filtered_df[filtered_df["국내여부"] == "국내"].copy()
+        
+        if "출고년월" in local_df.columns:
+            selected_months_str = local_df["출고년월"].dropna().unique()
             # Sort the months so they appear in chronological order (e.g., 2026-01, 2026-02)
             selected_months_2026 = sorted([m for m in selected_months_str if str(m).startswith("2026-")])
             target_month_cols = [f"{int(m.split('-')[1])}월" for m in selected_months_2026]
@@ -3984,7 +3986,7 @@ if current_tab_key == "목표달성현황":
             selected_months_2026 = [f"2026-{int(m.replace('월', '')):02d}" for m in target_month_cols]
             
             # 실적 데이터 복사 및 채널명 매핑 (목표값과 매칭)
-            actual_target_df = filtered_df[filtered_df["출고년월"].isin(selected_months_2026)].copy()
+            actual_target_df = local_df[local_df["출고년월"].isin(selected_months_2026)].copy()
             
             def map_channel(ch):
                 if not isinstance(ch, str): return ch
