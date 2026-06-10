@@ -3344,6 +3344,7 @@ if current_tab_key == "채널분석":
 
 
     st.subheader("📦 월별 채널별 출고량")
+
     ch_qty_pivot = pd.pivot_table(
         filtered_df, values="총내품출고수량", index="거래처분류",
         columns="출고년월", aggfunc="sum", fill_value=0
@@ -3786,6 +3787,8 @@ def _render_contrib_tab(base_df, market_filter, tab_label, ad_apply):
     for (ym, ch, ig), amt in st.session_state["channel_cost"].items():
         if ym not in selected_months or ch not in selected_channel_groups:
             continue
+        if selected_item_groups and ig not in selected_item_groups:
+            continue
         # 해외탭: 해당 거래처가 해외인 경우만 / 국내탭: 국내인 경우만 / 통합: 전체
         if market_filter is not None:
             ch_is_dom = (st.session_state.get("channel_dept_map", {}).get(ch, "") != "") and \
@@ -3823,6 +3826,8 @@ def _render_contrib_tab(base_df, market_filter, tab_label, ad_apply):
         for (ym, ch, ig), amt in st.session_state["channel_cost"].items():
             if ym not in selected_months:
                 continue
+            if selected_item_groups and ig not in selected_item_groups:
+                continue
             if market_filter is not None and mdf[mdf["거래처분류"] == ch].empty:
                 continue
             mask = cc["거래처분류"] == ch
@@ -3854,6 +3859,8 @@ def _render_contrib_tab(base_df, market_filter, tab_label, ad_apply):
             _m_ig["비용"] = 0.0
             for (ym, ch, ig), amt in st.session_state["channel_cost"].items():
                 if ym != m:
+                    continue
+                if selected_item_groups and ig not in selected_item_groups:
                     continue
                 if market_filter is not None and mdf[mdf["거래처분류"] == ch].empty:
                     continue
@@ -3897,6 +3904,8 @@ def _render_contrib_tab(base_df, market_filter, tab_label, ad_apply):
             _m_cc["비용"] = 0.0
             for (ym, ch, ig), amt in st.session_state["channel_cost"].items():
                 if ym != m:
+                    continue
+                if selected_item_groups and ig not in selected_item_groups:
                     continue
                 if market_filter is not None and mdf[mdf["거래처분류"] == ch].empty:
                     continue
@@ -4222,6 +4231,8 @@ if current_tab_key == "공헌이익분석(통합)":
     for (ym, ch, ig), amt in st.session_state["channel_cost"].items():
         if ym not in selected_months or ch not in selected_channel_groups:
             continue
+        if selected_item_groups and ig not in selected_item_groups:
+            continue
         _ch_dept = _ch_dept_map.get(ch, "")
         mask = product_contrib["품목군"] == ig
         if mask.any():
@@ -4269,6 +4280,8 @@ if current_tab_key == "공헌이익분석(통합)":
         for (ym, ch, ig), amt in st.session_state["channel_cost"].items():
             if ym not in selected_months:
                 continue
+            if selected_item_groups and ig not in selected_item_groups:
+                continue
             mask = channel_contrib["거래처분류"] == ch
             if mask.any():
                 channel_contrib.loc[mask, "비용"] += amt
@@ -4310,6 +4323,8 @@ if current_tab_key == "공헌이익분석(통합)":
             for (ym, ch, ig), amt in st.session_state["channel_cost"].items():
                 if ym != m:
                     continue
+                if selected_item_groups and ig not in selected_item_groups:
+                    continue
                 _t_mask_ig = _t_m_ig["품목군"] == ig
                 if _t_mask_ig.any():
                     _t_m_ig.loc[_t_mask_ig, "비용"] += amt
@@ -4350,6 +4365,8 @@ if current_tab_key == "공헌이익분석(통합)":
             _t_m_cc["비용"] = 0.0
             for (ym, ch, ig), amt in st.session_state["channel_cost"].items():
                 if ym != m:
+                    continue
+                if selected_item_groups and ig not in selected_item_groups:
                     continue
                 _t_mask_ch = _t_m_cc["거래처분류"] == ch
                 if _t_mask_ch.any():
