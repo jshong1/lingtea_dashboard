@@ -10,6 +10,6 @@ plotly
 openpyxl
 xlrd>=2.0.1
 firebase-admin
-streamlit-cookies-manager
+streamlit-cookies-manager-v2
 SQLAlchemy
 psycopg2-binary
