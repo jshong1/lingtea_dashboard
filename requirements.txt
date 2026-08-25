@@ -9,7 +9,8 @@ google-api-python-client
 plotly
 openpyxl
 xlrd>=2.0.1
-firebase-admin
+firebase-admin==6.5.0
+google-cloud-firestore==2.16.0
 streamlit-cookies-manager-v2
 SQLAlchemy
 psycopg2-binary
