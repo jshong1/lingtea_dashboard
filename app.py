@@ -119,10 +119,13 @@ def tab_allowed(tab_name: str) -> bool:
 # -----------------------------------
 def init_firebase():
     if not firebase_admin._apps:
-        key_dict = dict(st.secrets["gcp_service_account"])
-        cred = credentials.Certificate(key_dict)
-        firebase_admin.initialize_app(cred)
-
+        try:
+            key_dict = dict(st.secrets["gcp_service_account"])
+            cred = credentials.Certificate(key_dict)
+            firebase_admin.initialize_app(cred)
+        except ValueError:
+            pass
+            
 init_firebase()
 db = firestore.client()
 
