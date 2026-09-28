@@ -14,3 +14,4 @@ google-cloud-firestore==2.16.0
 streamlit-cookies-manager-v2
 SQLAlchemy
 psycopg2-binary
+psycopg[binary]>=3.2
